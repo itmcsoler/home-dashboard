@@ -1,0 +1,10 @@
+{
+  "name": "10523-hq-dashboard",
+  "version": "1.0.0",
+  "description": "Home & Area Intelligence Dashboard — Elmsford, Westchester NY",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {}
+}

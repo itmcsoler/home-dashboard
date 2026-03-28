@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>10523 HQ — Home Intelligence Dashboard</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <link rel="stylesheet" href="css/style.css"/>
+</head>
+<body>
+
+<!-- ══════════════════ HEADER ══════════════════ -->
+<header class="header">
+  <div class="header-left">
+    <div class="logo">🏠</div>
+    <div>
+      <div class="title-main">10523 HQ</div>
+      <span class="title-sub">Elmsford · Westchester County, NY</span>
+    </div>
+  </div>
+  <div class="header-center">
+    <div class="datetime" id="datetime"></div>
+  </div>
+  <div class="header-right" id="header-badges"></div>
+</header>
+
+<!-- ══════════════════ TAB NAV ══════════════════ -->
+<nav class="tab-nav">
+  <button class="tab-btn active" data-tab="all"><i class="fas fa-th-large"></i> All</button>
+  <button class="tab-btn" data-tab="weather"><i class="fas fa-cloud-sun"></i> Weather</button>
+  <button class="tab-btn" data-tab="events"><i class="fas fa-calendar-alt"></i> Events</button>
+  <button class="tab-btn" data-tab="crimes"><i class="fas fa-shield-alt"></i> Crimes</button>
+  <button class="tab-btn" data-tab="transportation"><i class="fas fa-car"></i> Transportation</button>
+  <button class="tab-btn" data-tab="aviation"><i class="fas fa-plane"></i> Aviation</button>
+  <button class="tab-btn" data-tab="community"><i class="fas fa-users"></i> Community</button>
+  <button class="tab-btn" data-tab="services"><i class="fas fa-bolt"></i> Services</button>
+</nav>
+
+<main class="main-content">
+
+<!-- ══════════════════ ALL TAB ══════════════════ -->
+<div class="tab-content active" id="tab-all">
+  <div class="all-grid">
+
+    <!-- Weather -->
+    <div class="panel weather-panel" id="all-weather">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-weather)"><i class="fas fa-cloud-sun"></i> Weather</div>
+        <div class="panel-meta" id="all-weather-updated"></div>
+      </div>
+      <div id="all-weather-body"><div class="loading"><div class="spinner"></div> Loading weather…</div></div>
+    </div>
+
+    <!-- Traffic mini-map -->
+    <div class="panel traffic-panel" id="all-traffic">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-transport)"><i class="fas fa-car"></i> Traffic — Elmsford Area</div>
+        <div class="panel-meta">Live tiles</div>
+      </div>
+      <div class="mini-map-container">
+        <div id="mini-map"></div>
+        <button class="map-overlay-btn" onclick="switchTab('transportation')">Full Map →</button>
+      </div>
+    </div>
+
+    <!-- Alerts -->
+    <div class="panel alerts-panel" id="all-alerts">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-crimes)"><i class="fas fa-triangle-exclamation"></i> Active Alerts</div>
+        <span class="badge badge-ok" id="alert-count-badge">0 active</span>
+      </div>
+      <div class="panel-body" id="all-alerts-body">
+        <div class="loading"><div class="spinner"></div> Checking alerts…</div>
+      </div>
+    </div>
+
+    <!-- Events preview -->
+    <div class="panel events-preview" id="all-events">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-events)"><i class="fas fa-calendar-alt"></i> Coming Up</div>
+        <div class="panel-meta">This weekend</div>
+      </div>
+      <div class="panel-body" id="all-events-body">
+        <div class="loading"><div class="spinner"></div> Loading events…</div>
+      </div>
+      <div class="see-all" onclick="switchTab('events')">See all events →</div>
+    </div>
+
+    <!-- Aircraft -->
+    <div class="panel aircraft-panel" id="all-aircraft">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-aviation)"><i class="fas fa-plane"></i> Aircraft Overhead</div>
+        <div class="panel-meta">~25mi radius</div>
+      </div>
+      <div class="panel-body" id="all-aircraft-body">
+        <div class="loading"><div class="spinner"></div> Scanning sky…</div>
+      </div>
+    </div>
+
+    <!-- Community -->
+    <div class="panel community-preview" id="all-community">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-community)"><i class="fas fa-users"></i> Community</div>
+        <div class="panel-meta">r/Westchester · Local News</div>
+      </div>
+      <div class="panel-body" id="all-community-body">
+        <div class="loading"><div class="spinner"></div> Loading feed…</div>
+      </div>
+    </div>
+
+    <!-- Services strip -->
+    <div class="panel services-strip" id="all-services">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-services)"><i class="fas fa-bolt"></i> Utilities & Services</div>
+        <span class="panel-meta" id="services-last-checked"></span>
+      </div>
+      <div class="panel-body" style="padding:10px 14px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap" id="services-chips">
+          <div class="loading"><div class="spinner"></div> Checking services…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- News feed -->
+    <div class="panel news-panel" id="all-news">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-weather)"><i class="fas fa-newspaper"></i> Local News</div>
+        <div class="panel-meta">lohud · Patch · Rivertowns</div>
+      </div>
+      <div id="all-news-body" class="news-grid">
+        <div class="loading"><div class="spinner"></div> Loading news…</div>
+      </div>
+    </div>
+
+  </div><!-- /all-grid -->
+</div><!-- /tab-all -->
+
+<!-- ══════════════════ WEATHER TAB ══════════════════ -->
+<div class="tab-content" id="tab-weather">
+  <div class="weather-full-grid">
+
+    <div class="panel weather-now-card">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-weather)"><i class="fas fa-thermometer-half"></i> Current Conditions</div>
+      </div>
+      <div class="panel-body" id="wx-now-body">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+
+    <div class="panel weather-forecast-card">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-weather)"><i class="fas fa-calendar-week"></i> 7-Day Forecast</div>
+      </div>
+      <div id="wx-forecast-body">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+
+    <div class="panel" style="grid-column:1/-1">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-crimes)"><i class="fas fa-triangle-exclamation"></i> NWS Weather Alerts — Westchester (NYZ069)</div>
+      </div>
+      <div class="panel-body" id="wx-alerts-body">
+        <div class="loading"><div class="spinner"></div> Checking…</div>
+      </div>
+    </div>
+
+    <div class="panel weather-usgs-card">
+      <div class="panel-header">
+        <div class="panel-title"><i class="fas fa-earth-americas"></i> Seismic Activity — USGS</div>
+        <div class="panel-meta">250mi radius · past 30 days</div>
+      </div>
+      <div class="panel-body" id="wx-usgs-body">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+
+  </div>
+</div><!-- /tab-weather -->
+
+<!-- ══════════════════ EVENTS TAB ══════════════════ -->
+<div class="tab-content" id="tab-events">
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title" style="color:var(--c-events)"><i class="fas fa-calendar-alt"></i> Local Events — Elmsford · Tarrytown · Westchester</div>
+    </div>
+    <div class="filter-bar">
+      <button class="filter-btn active" data-filter="all">All Upcoming</button>
+      <button class="filter-btn" data-filter="weekend">This Weekend</button>
+      <button class="filter-btn" data-filter="week">This Week</button>
+      <button class="filter-btn" data-filter="music">🎵 Music</button>
+      <button class="filter-btn" data-filter="food">🍷 Food & Wine</button>
+      <button class="filter-btn" data-filter="arts">🎨 Arts</button>
+      <button class="filter-btn" data-filter="family">👨‍👩‍👧 Family</button>
+    </div>
+    <div id="events-grid-body" class="events-grid">
+      <div class="loading"><div class="spinner"></div> Loading events…</div>
+    </div>
+  </div>
+
+  <!-- Village calendars -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);margin-top:var(--gap)">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-events)"><i class="fas fa-building-columns"></i> Elmsford Village Calendar</div>
+        <a href="https://www.elmsford.gov/calendar.aspx" target="_blank" style="font-size:10px;color:var(--text3)">elmsford.gov ↗</a>
+      </div>
+      <div class="panel-body" id="cal-elmsford-body">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-events)"><i class="fas fa-building-columns"></i> Tarrytown Village Calendar</div>
+        <a href="https://www.tarrytownny.gov/calendar/month" target="_blank" style="font-size:10px;color:var(--text3)">tarrytownny.gov ↗</a>
+      </div>
+      <div class="panel-body" id="cal-tarrytown-body">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+  </div>
+</div><!-- /tab-events -->
+
+<!-- ══════════════════ CRIMES TAB ══════════════════ -->
+<div class="tab-content" id="tab-crimes">
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title" style="color:var(--c-crimes)"><i class="fas fa-shield-alt"></i> Crime Activity — Elmsford & Surrounding Area</div>
+    </div>
+    <div class="stats-bar" id="crime-stats-bar">
+      <div class="stat-chip"><div class="stat-val" id="crime-total">—</div><div class="stat-lbl">Total (30d)</div></div>
+      <div class="stat-chip"><div class="stat-val text-bad" id="crime-violent">—</div><div class="stat-lbl">Violent</div></div>
+      <div class="stat-chip"><div class="stat-val text-warn" id="crime-property">—</div><div class="stat-lbl">Property</div></div>
+      <div class="stat-chip"><div class="stat-val" id="crime-other">—</div><div class="stat-lbl">Other</div></div>
+    </div>
+    <div class="crime-map-container">
+      <div id="crime-map"></div>
+    </div>
+  </div>
+  <div class="panel" style="margin-top:var(--gap)">
+    <div class="panel-header">
+      <div class="panel-title" style="color:var(--c-crimes)">Recent Incidents</div>
+      <div class="panel-meta">Source: SpotCrime</div>
+    </div>
+    <div class="panel-body" id="crimes-list-body">
+      <div class="loading"><div class="spinner"></div> Loading incidents…</div>
+    </div>
+  </div>
+</div><!-- /tab-crimes -->
+
+<!-- ══════════════════ TRANSPORTATION TAB ══════════════════ -->
+<div class="tab-content" id="tab-transportation">
+  <div class="transport-grid">
+    <div class="panel transport-map-card">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-transport)"><i class="fas fa-map"></i> Traffic Map — Westchester</div>
+        <div class="panel-meta">CartoDB + OSM</div>
+      </div>
+      <div class="transport-map-container"><div id="transport-map"></div></div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:var(--gap)">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title" style="color:var(--c-transport)"><i class="fas fa-train"></i> Metro-North</div>
+        </div>
+        <div class="transit-status" id="transit-status-body">
+          <div class="transit-item">
+            <div class="transit-name">Harlem Line <span class="transit-badge ok">Checking…</span></div>
+            <div class="transit-sub">Grand Central ↔ Southeast</div>
+          </div>
+          <div class="transit-item">
+            <div class="transit-name">Hudson Line <span class="transit-badge ok">Checking…</span></div>
+            <div class="transit-sub">Grand Central ↔ Poughkeepsie</div>
+          </div>
+          <div style="margin-top:8px">
+            <a href="https://new.mta.info/alerts" target="_blank" style="font-size:11px;color:var(--c-transport)">MTA Alerts ↗</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title" style="color:var(--c-transport)"><i class="fas fa-road"></i> Traffic Incidents</div>
+        </div>
+        <div class="panel-body" id="traffic-incidents-body">
+          <div class="empty">Check <a href="https://511ny.org" target="_blank" style="color:var(--c-transport)">511ny.org</a> for live incidents</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><i class="fas fa-link"></i> Quick Links</div>
+        </div>
+        <div class="panel-body" style="display:flex;flex-direction:column;gap:8px;font-size:12px">
+          <a href="https://511ny.org" target="_blank" style="color:var(--c-transport)"><i class="fas fa-road"></i> 511NY Traffic</a>
+          <a href="https://new.mta.info" target="_blank" style="color:var(--c-transport)"><i class="fas fa-train"></i> MTA Service Status</a>
+          <a href="https://www.waze.com/en-US/live-map/" target="_blank" style="color:var(--c-transport)"><i class="fas fa-map-location-dot"></i> Waze Live Map</a>
+          <a href="https://maps.google.com" target="_blank" style="color:var(--c-transport)"><i class="fab fa-google"></i> Google Maps</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div><!-- /tab-transportation -->
+
+<!-- ══════════════════ AVIATION TAB ══════════════════ -->
+<div class="tab-content" id="tab-aviation">
+  <div class="aviation-grid">
+    <div class="panel aviation-map-card">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-aviation)"><i class="fas fa-plane"></i> ADS-B / MLAT — Live Aircraft — 25mi Radius</div>
+        <div class="panel-meta">Source: OpenSky Network · <span id="aviation-count">—</span> aircraft</div>
+      </div>
+      <div class="aviation-map-container"><div id="aviation-map"></div></div>
+    </div>
+
+    <div class="panel" style="grid-column:1/-1">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-aviation)">Aircraft Table</div>
+        <a href="https://www.flightradar24.com/41.05,-73.82/10" target="_blank" style="font-size:11px;color:var(--c-aviation)">FlightRadar24 ↗</a>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="aircraft-table" id="aircraft-table">
+          <thead>
+            <tr>
+              <th>Callsign</th><th>ICAO</th><th>Aircraft</th>
+              <th>Altitude</th><th>Speed</th><th>Heading</th>
+              <th>Origin</th><th>Destination</th><th>Country</th>
+            </tr>
+          </thead>
+          <tbody id="aircraft-tbody">
+            <tr><td colspan="9" class="loading"><div class="spinner"></div> Scanning…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div><!-- /tab-aviation -->
+
+<!-- ══════════════════ COMMUNITY TAB ══════════════════ -->
+<div class="tab-content" id="tab-community">
+  <div class="community-grid">
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-community)"><i class="fab fa-reddit"></i> r/Westchester</div>
+        <a href="https://www.reddit.com/r/Westchester" target="_blank" style="font-size:10px;color:var(--text3)">Open Reddit ↗</a>
+      </div>
+      <ul class="community-list" id="reddit-list">
+        <li class="loading"><div class="spinner"></div> Loading…</li>
+      </ul>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-community)"><i class="fas fa-newspaper"></i> Local News</div>
+      </div>
+      <ul class="community-list" id="news-list-community">
+        <li class="loading"><div class="spinner"></div> Loading…</li>
+      </ul>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title"><i class="fas fa-ring"></i> Ring Neighbors</div>
+      </div>
+      <div class="placeholder-card">
+        <i class="fas fa-bell" style="color:var(--c-community)"></i>
+        <div class="ph-title">Ring Neighbors</div>
+        <div class="ph-desc">No public API available.<br/>Open the Ring app for local alerts.</div>
+        <a href="https://neighbors.ring.com" target="_blank" style="font-size:11px;color:var(--c-community);margin-top:10px;display:block">neighbors.ring.com ↗</a>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title"><i class="fas fa-house-chimney-user"></i> Nextdoor</div>
+      </div>
+      <div class="placeholder-card">
+        <i class="fas fa-comments" style="color:var(--c-community)"></i>
+        <div class="ph-title">Nextdoor</div>
+        <div class="ph-desc">No public API available.<br/>Log in to see posts from your neighborhood.</div>
+        <a href="https://nextdoor.com" target="_blank" style="font-size:11px;color:var(--c-community);margin-top:10px;display:block">nextdoor.com ↗</a>
+      </div>
+    </div>
+
+    <div class="panel community-wide">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-events)"><i class="fas fa-building-columns"></i> Village Calendars</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+        <div style="border-right:1px solid var(--border)">
+          <div style="padding:8px 14px;font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">Elmsford</div>
+          <ul class="cal-list" id="cal-elmsford-comm" style="padding:0 14px 12px"></ul>
+        </div>
+        <div>
+          <div style="padding:8px 14px;font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">Tarrytown</div>
+          <ul class="cal-list" id="cal-tarrytown-comm" style="padding:0 14px 12px"></ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div><!-- /tab-community -->
+
+<!-- ══════════════════ SERVICES TAB ══════════════════ -->
+<div class="tab-content" id="tab-services">
+  <div class="services-grid" id="services-cards-body">
+    <div class="loading"><div class="spinner"></div> Checking all services…</div>
+  </div>
+</div><!-- /tab-services -->
+
+</main><!-- /main-content -->
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
