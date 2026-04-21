@@ -12,15 +12,14 @@ const CFG = {
   openSkyBounds: { lamin: 40.55, lomin: -74.40, lamax: 41.55, lomax: -72.90 },
   subreddits: ['Westchester', 'thetriangle'],
   rssSources: [
-    { name: 'lohud', url: 'https://www.lohud.com/arcio/rss/' },
-    { name: 'Patch Elmsford', url: 'https://patch.com/new-york/elmsford/rss.xml' },
-    { name: 'Patch Tarrytown', url: 'https://patch.com/new-york/tarrytown/rss.xml' },
-    { name: 'Rivertowns', url: 'https://rivertownsenterprise.net/feed/' },
+    { name: 'Westchester',  url: 'https://news.google.com/rss/search?q=Westchester+County+New+York+news&hl=en-US&gl=US&ceid=US:en' },
+    { name: 'Local',        url: 'https://news.google.com/rss/search?q=Elmsford+OR+Tarrytown+OR+%22Sleepy+Hollow%22+OR+%22White+Plains%22+New+York&hl=en-US&gl=US&ceid=US:en' },
+    { name: 'Rivertowns',   url: 'https://rivertownsenterprise.net/feed/' },
   ],
   refresh: {
     weather:   10 * 60 * 1000,
     alerts:     5 * 60 * 1000,
-    aircraft:   60 * 1000,
+    aircraft:  600 * 1000,   // 10 min — OpenSky free tier ~100 req/day
     community: 15 * 60 * 1000,
     services:  10 * 60 * 1000,
   },
@@ -39,6 +38,7 @@ let allNews = [];
 let calendarData = { elmsford: [], tarrytown: [] };
 let activeEventFilter = 'all';
 let servicesData = [];
+// AIS state is declared near the AIS section below
 
 // ─── UTILITIES ──────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -101,8 +101,10 @@ updateDateTime();
 function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === `tab-${name}`));
-  // Invalidate Leaflet maps when shown
-  setTimeout(() => { Object.values(maps).forEach(m => { try { m.invalidateSize(); } catch(e){} }); }, 100);
+  // Lazy-init marine map the first time that tab is opened
+  if (name === 'marine') setTimeout(initMarineMap, 50);
+  // Invalidate all Leaflet maps so they redraw at correct size
+  setTimeout(() => { Object.values(maps).forEach(m => { try { m.invalidateSize(); } catch(e){} }); }, 120);
 }
 function initTabs() {
   document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -122,19 +124,8 @@ function initTabs() {
 function initMaps() {
   const tileOpts = { attribution: CFG.cartoAttr, subdomains: 'abcd', maxZoom: 19 };
 
-  // Mini traffic map (All tab)
-  maps.mini = L.map('mini-map', { zoomControl:false, scrollWheelZoom:false, dragging:false })
-    .setView([CFG.lat, CFG.lon], 12);
-  L.tileLayer(CFG.cartoTiles, tileOpts).addTo(maps.mini);
-  L.circleMarker([CFG.lat, CFG.lon], { color:'#38bdf8', fillColor:'#38bdf8', fillOpacity:1, radius:7, weight:2 })
-    .addTo(maps.mini).bindPopup('🏠 Home — 10523');
-
-  // Transport map
-  maps.transport = L.map('transport-map', { zoomControl:true })
-    .setView([CFG.lat, CFG.lon], 11);
-  L.tileLayer(CFG.cartoTiles, tileOpts).addTo(maps.transport);
-  L.circleMarker([CFG.lat, CFG.lon], { color:'#fbbf24', fillColor:'#fbbf24', fillOpacity:1, radius:7 })
-    .addTo(maps.transport).bindPopup('🏠 Home');
+  // Mini traffic map (All tab) → Waze iframe (no Leaflet init needed)
+  // Transport map → Waze iframe (no Leaflet init needed)
 
   // Crime map
   maps.crime = L.map('crime-map', { zoomControl:true })
@@ -153,6 +144,25 @@ function initMaps() {
   // 25-mile radius circle on aviation map
   L.circle([CFG.lat, CFG.lon], { radius: 40234, color:'#a78bfa', fillColor:'#a78bfa', fillOpacity:0.04, dashArray:'6 4', weight:1 })
     .addTo(maps.aviation).bindPopup('25mi monitoring radius');
+
+  // NOTE: Marine map initializes lazily when the Marine tab is first opened
+  // (Leaflet errors on hidden/zero-size elements, which would crash init() and block all feeds)
+}
+
+function initMarineMap() {
+  if (maps.marine) return; // already initialized
+  const tileOpts = { attribution: CFG.cartoAttr, subdomains: 'abcd', maxZoom: 19 };
+  maps.marine = L.map('marine-map', { zoomControl: true })
+    .setView([41.05, -73.97], 10);
+  L.tileLayer(CFG.cartoTiles, tileOpts).addTo(maps.marine);
+  L.polyline([[40.57,-74.02],[40.70,-74.00],[40.90,-73.97],[41.10,-73.95],[41.25,-73.96],[41.40,-73.97],[41.55,-73.96]], {
+    color:'#06b6d4', weight:2, opacity:0.25, dashArray:'4 4'
+  }).addTo(maps.marine).bindPopup('Hudson River');
+  L.circleMarker([CFG.lat, CFG.lon], { color:'#38bdf8', fillColor:'#38bdf8', fillOpacity:1, radius:6, weight:2 })
+    .addTo(maps.marine).bindPopup('🏠 Home — 10523 (5mi from Hudson)');
+  // Re-draw any vessel markers that arrived before the map was ready
+  Object.keys(vesselMap).forEach(mmsi => updateVesselMarker(mmsi));
+  maps.marine.invalidateSize();
 }
 
 // ─── WEATHER (NWS) ──────────────────────────────────────────────
@@ -317,16 +327,35 @@ async function fetchUSGS() {
 // ─── AIRCRAFT (OPENSKY) ─────────────────────────────────────────
 async function fetchAircraft() {
   try {
+    const hasServer = await checkServer();
     const b = CFG.openSkyBounds;
-    const url = `https://opensky-network.org/api/states/all?lamin=${b.lamin}&lomin=${b.lomin}&lamax=${b.lamax}&lomax=${b.lomax}`;
+    const url = hasServer
+      ? '/api/aircraft'
+      : `https://opensky-network.org/api/states/all?lamin=${b.lamin}&lomin=${b.lomin}&lamax=${b.lamax}&lomax=${b.lomax}`;
     const r = await fetch(url);
+    if (r.status === 429 || r.status === 503) {
+      $('aviation-count') && ($('aviation-count').textContent = `rate limited — retry in 10 min`);
+      const el = $('all-aircraft-body');
+      if (el && !allAircraft.length) el.innerHTML = `<div class="empty">OpenSky rate limit reached<br><small>Will retry automatically in 10 min</small></div>`;
+      const tbody = $('aircraft-tbody');
+      if (tbody && !allAircraft.length) tbody.innerHTML = `<tr><td colspan="9" class="empty">Rate limited — showing cached data if available</td></tr>`;
+      return; // keep existing allAircraft data on screen if we have it
+    }
+    if (r.status === 401 || r.status === 403) {
+      const el = $('all-aircraft-body');
+      if (el) el.innerHTML = `<div class="empty">OpenSky access denied (${r.status})<br><small>Free anonymous access may be restricted — <a href="https://opensky-network.org/login" target="_blank" style="color:var(--c-aviation)">create a free account ↗</a></small></div>`;
+      $('aviation-count') && ($('aviation-count').textContent = `access denied`);
+      return;
+    }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
     allAircraft = (d.states || []).filter(s => s[5] && s[6]); // must have lon/lat
     renderAircraft(allAircraft);
   } catch(e) {
-    $('all-aircraft-body').innerHTML = `<div class="empty">OpenSky unavailable<br><small>Rate limited — try again shortly</small></div>`;
+    const el = $('all-aircraft-body');
+    if (el) el.innerHTML = `<div class="empty">OpenSky unavailable<br><small>${e.message}</small></div>`;
     const tbody = $('aircraft-tbody');
-    if (tbody) tbody.innerHTML = `<tr><td colspan="9" class="empty">Data unavailable</td></tr>`;
+    if (tbody) tbody.innerHTML = `<tr><td colspan="9" class="empty">Data unavailable — ${e.message}</td></tr>`;
   }
 }
 
@@ -406,16 +435,29 @@ function renderAircraft(states) {
 
 // ─── REDDIT ─────────────────────────────────────────────────────
 async function fetchReddit() {
+  const hasServer = await checkServer();
   try {
-    const r = await fetch('https://www.reddit.com/r/Westchester.json?limit=15', {
-      headers: { 'User-Agent': 'HomeDashboard/1.0' }
-    });
-    const d = await r.json();
-    const posts = d.data?.children?.map(c => c.data) || [];
-    renderReddit(posts);
+    let posts = [];
+    if (hasServer) {
+      // Server proxy avoids CORS preflight that kills the browser direct fetch
+      const r = await fetch('/api/reddit?sub=Westchester');
+      const d = await r.json();
+      posts = d.posts || [];
+    } else {
+      // Direct fetch — no custom headers so no preflight, simpler CORS
+      const r = await fetch('https://www.reddit.com/r/Westchester.json?limit=15&raw_json=1');
+      const d = await r.json();
+      posts = d.data?.children?.map(c => c.data) || [];
+    }
+    if (posts.length) {
+      renderReddit(posts);
+    } else {
+      const el = $('reddit-list');
+      if (el) el.innerHTML = `<li class="empty">No posts returned — <a href="https://reddit.com/r/Westchester" target="_blank" style="color:var(--c-community)">open Reddit ↗</a></li>`;
+    }
   } catch(e) {
     const el = $('reddit-list');
-    if (el) el.innerHTML = `<li class="empty">Reddit unavailable</li>`;
+    if (el) el.innerHTML = `<li class="empty">Reddit unavailable: ${e.message}</li>`;
   }
 }
 
@@ -431,10 +473,10 @@ function renderReddit(posts) {
   const el = $('reddit-list');
   if (el) el.innerHTML = html || `<li class="empty">No posts found</li>`;
 
-  // Also populate All tab community widget
+  // Populate All tab community widget (6 items, fills 3-column grid)
   const comm = $('all-community-body');
   if (comm) {
-    comm.innerHTML = posts.slice(0, 4).map(p => `
+    comm.innerHTML = posts.slice(0, 6).map(p => `
       <div class="community-item">
         <div class="community-source">r/Westchester</div>
         <div class="community-title"><a href="https://reddit.com${p.permalink}" target="_blank" style="color:var(--text)">${p.title}</a></div>
@@ -450,8 +492,8 @@ async function checkServer() {
   if (_serverAvail !== null) return _serverAvail;
   try {
     const ctrl = new AbortController();
-    setTimeout(() => ctrl.abort(), 1500);
-    const r = await fetch('/api/rss?url=test', { signal: ctrl.signal });
+    setTimeout(() => ctrl.abort(), 2000);
+    await fetch('/api/ping', { signal: ctrl.signal });
     _serverAvail = true;
   } catch(e) { _serverAvail = false; }
   return _serverAvail;
@@ -487,14 +529,26 @@ async function fetchRSSOne(src) {
 
 async function fetchNews() {
   const results = await Promise.allSettled(CFG.rssSources.map(src => fetchRSSOne(src)));
+  const prevCount = allNews.length;
   allNews = [];
-  results.forEach(r => {
-    if (r.status === 'fulfilled' && r.value?.items) {
+  const errors = [];
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled' && r.value?.items?.length) {
       r.value.items.forEach(item => allNews.push({ ...item, sourceName: r.value.sourceName }));
+    } else if (r.status === 'rejected' || (r.status === 'fulfilled' && !r.value?.items?.length)) {
+      errors.push(CFG.rssSources[i].name);
     }
   });
   allNews.sort((a, b) => new Date(b.date) - new Date(a.date));
+  if (!allNews.length && errors.length) {
+    const newsGrid = $('all-news-body');
+    if (newsGrid) newsGrid.innerHTML = `<div class="empty" style="grid-column:1/-1">News feeds unavailable (${errors.join(', ')})<br><small>Server may need to be running — start start.bat</small></div>`;
+    const commList = $('news-list-community');
+    if (commList) commList.innerHTML = `<li class="empty">News unavailable: ${errors.join(', ')}</li>`;
+    return;
+  }
   renderNews();
+  if (errors.length) console.warn('[News] Failed sources:', errors.join(', '));
 }
 
 function renderNews() {
@@ -520,35 +574,77 @@ function renderNews() {
   }
 }
 
-// ─── EVENTS (TICKETMASTER) ──────────────────────────────────────
+// ─── EVENTS ─────────────────────────────────────────────────────
 async function fetchEvents() {
-  // Try Ticketmaster (free API key required — using public discovery endpoint)
-  const mockEvents = [
-    { title: 'Sleepy Hollow Lantern Festival', date: 'This Weekend', venue: 'Sleepy Hollow Cemetery', source: 'Community', category: 'arts', link: '#' },
-    { title: 'Hudson Valley Wine & Food Fest', date: 'Sat Oct 5', venue: 'Westchester County Center', source: 'Westchester.gov', category: 'food', link: '#' },
-    { title: 'Tarrytown Farmers Market', date: 'Every Sunday', venue: 'Patriots Park, Tarrytown', source: 'Village Calendar', category: 'family', link: '#' },
-    { title: 'Music on the Hudson', date: 'Fri–Sun', venue: 'Irvington Waterfront', source: 'Eventbrite', category: 'music', link: '#' },
-    { title: 'Westchester County Fair', date: 'Sep 28–Oct 6', venue: 'Yonkers Raceway', source: 'Ticketmaster', category: 'family', link: '#' },
-    { title: 'Halloween Parade — Tarrytown', date: 'Oct 26', venue: 'Downtown Tarrytown', source: 'Tarrytown Calendar', category: 'family', link: 'https://www.tarrytownny.gov' },
-    { title: 'Jazz in the Park', date: 'Sun Oct 6', venue: 'Elmsford Town Park', source: 'Elmsford Calendar', category: 'music', link: 'https://www.elmsford.gov' },
-    { title: 'Craft Beer & Cider Festival', date: 'Oct 12', venue: 'Cross County Mall Area', source: 'Eventbrite', category: 'food', link: '#' },
+  const hasServer = await checkServer();
+  let events = [];
+
+  // 1. Try village calendars via server (most reliable local source)
+  if (hasServer) {
+    const [elms, tarr] = await Promise.allSettled([
+      fetch('/api/calendar/elmsford').then(r => r.json()),
+      fetch('/api/calendar/tarrytown').then(r => r.json())
+    ]);
+    if (elms.status === 'fulfilled') {
+      calendarData.elmsford = elms.value.events || [];
+      calendarData.elmsford.forEach(e => events.push({ ...e, category: 'community', source: 'Elmsford Village' }));
+    }
+    if (tarr.status === 'fulfilled') {
+      calendarData.tarrytown = tarr.value.events || [];
+      calendarData.tarrytown.forEach(e => events.push({ ...e, category: 'community', source: 'Tarrytown Village' }));
+    }
+  }
+
+  // 2. Try Eventbrite public RSS for Westchester (no API key needed)
+  try {
+    const ebUrl = 'https://www.eventbrite.com/d/ny--westchester/events/?format=rss';
+    const proxyUrl = hasServer
+      ? `/api/rss?url=${encodeURIComponent(ebUrl)}`
+      : `https://api.allorigins.win/raw?url=${encodeURIComponent(ebUrl)}`;
+    const r = await fetch(proxyUrl);
+    const text = await r.text();
+    const items = parseRSSClient ? parseRSSClient(text, 'Eventbrite') : [];
+    items.slice(0, 8).forEach(i => {
+      if (i.title) events.push({ title: i.title, link: i.link, date: i.date ? fmtDate(i.date) : 'Upcoming', venue: 'Westchester', source: 'Eventbrite', category: guessCategory(i.title) });
+    });
+  } catch(e) { /* eventbrite optional */ }
+
+  // 3. Standing local events (always visible; no API needed)
+  const standing = [
+    { title: 'Tarrytown Farmers Market', date: 'Every Sunday', venue: 'Patriots Park, Tarrytown', source: 'Village Calendar', category: 'family', link: 'https://www.tarrytownny.gov' },
+    { title: 'Sleepy Hollow Walking Tours', date: 'Fridays & Saturdays', venue: 'Sleepy Hollow', source: 'sleepyhollowny.gov', category: 'arts', link: 'https://www.sleepyhollowny.gov' },
+    { title: 'Westchester Community Events', date: 'See calendar', venue: 'Westchester County', source: 'westchestergov.com', category: 'community', link: 'https://www.westchestergov.com/community' },
   ];
-  allEvents = mockEvents;
+  standing.forEach(e => events.push(e));
+
+  allEvents = events.length ? events : standing; // fallback to standing if everything failed
+  renderCalendars(); // sync village calendar panels too
   renderEventsGrid();
 
   // Weekend preview on All tab
   const preview = $('all-events-body');
   if (preview) {
-    preview.innerHTML = mockEvents.slice(0, 4).map(e => `
+    const show = allEvents.slice(0, 4);
+    if (!show.length) { preview.innerHTML = `<div class="empty">No events loaded</div>`; return; }
+    preview.innerHTML = show.map(e => `
       <div class="event-item">
         <div class="event-dot"></div>
         <div>
           <div class="event-title">${e.title}</div>
-          <div class="event-meta">${e.date} · ${e.venue}</div>
+          <div class="event-meta">${e.date || 'Upcoming'} · ${e.venue || ''}</div>
           <div class="event-meta" style="color:var(--c-events)">${e.source}</div>
         </div>
       </div>`).join('');
   }
+}
+
+function guessCategory(title) {
+  const t = (title || '').toLowerCase();
+  if (/music|jazz|concert|band|sing|fest.*music/i.test(t)) return 'music';
+  if (/wine|food|beer|cider|taste|culinary|dinner/i.test(t)) return 'food';
+  if (/art|exhibit|gallery|theater|film|show|craft/i.test(t)) return 'arts';
+  if (/kid|family|child|youth|parade|fair/i.test(t)) return 'family';
+  return 'community';
 }
 
 function renderEventsGrid() {
@@ -669,6 +765,83 @@ function renderCrimes(crimes) {
 }
 
 // ─── SERVICES ───────────────────────────────────────────────────
+// ─── WAZE TRAFFIC INCIDENTS ─────────────────────────────────────
+const WAZE_ALERT_TYPES = {
+  ACCIDENT:    { icon: '💥', color: 'var(--bad)',       label: 'Accident' },
+  ROAD_CLOSED: { icon: '🚧', color: 'var(--bad)',       label: 'Road Closed' },
+  HAZARD:      { icon: '⚠️',  color: 'var(--warn)',      label: 'Hazard' },
+  JAM:         { icon: '🚦', color: 'var(--warn)',      label: 'Traffic Jam' },
+  POLICE:      { icon: '🚔', color: 'var(--c-transport)', label: 'Police' },
+  WEATHERHAZARD: { icon: '🌧️', color: 'var(--c-weather)', label: 'Weather Hazard' },
+};
+
+async function fetchTrafficIncidents() {
+  const body = $('traffic-incidents-body');
+  if (!body) return;
+
+  const hasServer = await checkServer();
+  if (!hasServer) {
+    body.innerHTML = `<div class="empty">Server offline — <a href="https://511ny.org" target="_blank" style="color:var(--c-transport)">511ny.org ↗</a></div>`;
+    return;
+  }
+
+  try {
+    const r  = await fetch('/api/traffic');
+    const data = await r.json();
+    if (data.error && !data.alerts && !data.jams) throw new Error(data.error);
+
+    const alerts = (data.alerts || []);
+    const jams   = (data.jams   || []).filter(j => (j.level || 0) >= 3); // only significant jams
+
+    if (alerts.length === 0 && jams.length === 0) {
+      body.innerHTML = `<div class="empty" style="color:var(--ok)">✓ No incidents reported in the area</div>`;
+      return;
+    }
+
+    const renderAlert = a => {
+      const info   = WAZE_ALERT_TYPES[a.type] || { icon: '⚠️', color: 'var(--text3)', label: a.type || 'Incident' };
+      const sub    = a.subtype ? ' — ' + a.subtype.replace(/_/g,' ').toLowerCase() : '';
+      const street = a.street || a.city || 'Unknown location';
+      const ago    = a.pubMillis ? timeAgo(a.pubMillis) : '';
+      return `<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:15px;flex-shrink:0;margin-top:1px">${info.icon}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;font-weight:600;color:${info.color}">${info.label}${sub}</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${street}">${street}</div>
+          ${ago ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">${ago}</div>` : ''}
+        </div>
+      </div>`;
+    };
+
+    const renderJam = j => {
+      const street = j.street || 'Unknown road';
+      const speed  = j.speedKMH != null ? Math.round(j.speedKMH * 0.621) + ' mph' : '';
+      const delay  = j.delay   ? Math.round(j.delay / 60) + 'min delay' : '';
+      const col    = j.level >= 4 ? 'var(--bad)' : 'var(--warn)';
+      return `<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:15px;flex-shrink:0;margin-top:1px">🚦</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;font-weight:600;color:${col}">Heavy Traffic — Level ${j.level}/5</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${street}">${street}</div>
+          ${speed||delay ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">${[speed,delay].filter(Boolean).join(' · ')}</div>` : ''}
+        </div>
+      </div>`;
+    };
+
+    const items = [
+      ...alerts.slice(0, 8).map(renderAlert),
+      ...jams.slice(0, 4).map(renderJam)
+    ];
+    const extra = (alerts.length + jams.length) - items.length;
+
+    body.innerHTML = `<div style="padding:4px 0">${items.join('')}</div>` +
+      (extra > 0 ? `<div style="font-size:10px;color:var(--text3);padding:4px 0">+${extra} more — <a href="https://www.waze.com/live-map/" target="_blank" style="color:var(--c-transport)">open Waze ↗</a></div>` : '');
+
+  } catch(e) {
+    body.innerHTML = `<div class="empty">Waze data unavailable — <a href="https://www.waze.com/live-map/" target="_blank" style="color:var(--c-transport)">waze.com ↗</a></div>`;
+  }
+}
+
 const SERVICE_ICONS = {
   'ConEdison': '⚡', 'Comcast / Xfinity': '📡', 'Verizon Wireless': '📱',
   'National Grid': '🔥', 'SUEZ Water': '💧'
@@ -760,10 +933,449 @@ function updateHeaderBadges() {
   badges.innerHTML = html;
 }
 
+// ─── AIS / MARINE (aisstream.io) ────────────────────────────────
+const AIS_KEY_STORAGE = 'ais_api_key';
+const AIS_WS_URL = 'wss://stream.aisstream.io/v0/stream';
+// Hudson River bounding box: [SW_lat, SW_lon], [NE_lat, NE_lon]
+const AIS_BOUNDS = [[40.55, -74.10], [41.55, -73.85]];
+
+let aisSocket = null;
+let vesselMap = {};         // MMSI → vessel data
+let vesselMarkers = {};     // MMSI → Leaflet marker
+let aisConnected = false;
+
+const VESSEL_TYPES = {
+  // Ranges → label + css class
+  cargo:     { range: [[70,79]], label: 'Cargo',     cls: 'cargo',     icon: '🚢' },
+  tanker:    { range: [[80,89]], label: 'Tanker',    cls: 'tanker',    icon: '🛢️' },
+  passenger: { range: [[60,69]], label: 'Passenger', cls: 'passenger', icon: '⛴️' },
+  sailing:   { range: [[36,36]], label: 'Sailing',   cls: 'sailing',   icon: '⛵' },
+  pleasure:  { range: [[37,37]], label: 'Pleasure',  cls: 'pleasure',  icon: '🚤' },
+  tug:       { range: [[21,22],[31,32]], label: 'Tug/Tow', cls: 'tug', icon: '🚢' },
+};
+
+function getVesselType(typeCode) {
+  if (!typeCode) return { label: 'Unknown', cls: 'other', icon: '⚓' };
+  for (const [key, vt] of Object.entries(VESSEL_TYPES)) {
+    for (const [lo, hi] of vt.range) {
+      if (typeCode >= lo && typeCode <= hi) return vt;
+    }
+  }
+  return { label: `Type ${typeCode}`, cls: 'other', icon: '⚓' };
+}
+
+const NAV_STATUS = {
+  0: 'Underway', 1: 'Anchored', 2: 'Not under command', 3: 'Restricted maneuverability',
+  4: 'Constrained by draught', 5: 'Moored', 6: 'Aground', 7: 'Fishing',
+  8: 'Sailing', 15: 'Not defined'
+};
+
+function getAISKey() {
+  return localStorage.getItem(AIS_KEY_STORAGE) || '';
+}
+
+function saveAISKey() {
+  const input = $('ais-key-input');
+  if (!input || !input.value.trim()) return;
+  const key = input.value.trim();
+  localStorage.setItem(AIS_KEY_STORAGE, key);
+  const banner = $('ais-key-banner');
+  if (banner) banner.style.display = 'none';
+
+  if (_aisUsingProxy) {
+    // Send key to server proxy
+    fetch('/api/ais/key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key })
+    }).then(() => {
+      setAISStatus('connecting');
+      setAISDebug('Server proxy connecting…');
+    }).catch(() => connectAIS()); // server fell over — use direct WS
+  } else {
+    connectAIS();
+  }
+}
+
+function setAISStatus(state) {
+  // state: 'live' | 'connecting' | 'off'
+  aisConnected = state === 'live';
+  const dot  = $('ais-status-dot');
+  const text = $('ais-status-text');
+  const meta = $('all-marine-meta');
+  const states = {
+    live:       { cls: 'ais-dot-live', label: 'Live · Hudson River' },
+    connecting: { cls: 'ais-dot-wait', label: 'Connecting…' },
+    off:        { cls: 'ais-dot-off',  label: 'Not connected' },
+  };
+  const s = states[state] || states.off;
+  if (dot)  { dot.className = 'svc-dot ' + s.cls; }
+  if (text) { text.textContent = s.label; }
+  if (meta) { meta.textContent = s.label; }
+}
+
+// ─── AIS INIT (server proxy → direct WebSocket fallback) ─────────
+let _aisUsingProxy = false;
+
+async function initAIS() {
+  const hasServer = await checkServer();
+
+  if (hasServer) {
+    _aisUsingProxy = true;
+
+    // Ask server if it already has a key loaded (e.g. auto-loaded from config.json on restart)
+    try {
+      const statusRes = await fetch('/api/ais/key');
+      const status = await statusRes.json();
+
+      if (status.connected || (status.status && status.status !== 'off')) {
+        // Server already has a live/connecting AIS proxy — just poll
+        setAISStatus('connecting');
+        setAISDebug('Server proxy active — polling…');
+        pollAIS();
+        setInterval(pollAIS, 30000);
+        return;
+      }
+    } catch(e) { /* ignore — server might not respond to GET on /api/ais/key */ }
+
+    // Server doesn't have a key yet — check localStorage
+    const key = getAISKey();
+    if (key) {
+      try {
+        await fetch('/api/ais/key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key })
+        });
+        setAISStatus('connecting');
+        setAISDebug('Server proxy connecting…');
+        pollAIS();
+        setInterval(pollAIS, 30000);
+        return;
+      } catch(e) { /* fall through */ }
+    }
+
+    // No key anywhere — show banner (proxy mode, so saveAISKey will POST to server)
+    const banner = $('ais-key-banner');
+    if (banner) banner.style.display = 'block';
+    setAISStatus('off');
+    setAISDebug('Enter API key above to connect');
+    return;
+  }
+
+  // No server — fall back to direct browser WebSocket
+  // (Note: if the server isn't running, start start.bat for full proxy support)
+  setAISDebug('No server — using direct WebSocket (restart start.bat for proxy mode)');
+  connectAIS();
+}
+
+async function pollAIS() {
+  try {
+    const r = await fetch('/api/ais');
+    if (!r.ok) return;
+    const d = await r.json();
+
+    // Sync vesselMap from server data
+    const serverMMSIs = new Set();
+    (d.vessels || []).forEach(v => {
+      serverMMSIs.add(String(v.mmsi));
+      vesselMap[v.mmsi] = v;
+    });
+    // Remove vessels no longer on server
+    Object.keys(vesselMap).forEach(m => {
+      if (!serverMMSIs.has(String(m))) {
+        if (vesselMarkers[m]) { vesselMarkers[m].remove(); delete vesselMarkers[m]; }
+        delete vesselMap[m];
+      }
+    });
+
+    if (d.connected) {
+      setAISStatus('live');
+      setAISDebug(`Server proxy · ${d.count} vessel${d.count !== 1 ? 's' : ''}`);
+    } else {
+      setAISStatus('connecting');
+      const detail = d.status && d.status.startsWith('error:') ? d.status.replace('error:', '') :
+                     d.status && d.status.startsWith('closed:') ? `Reconnecting (${d.status.replace('closed:','code ')})` : 'Connecting…';
+      setAISDebug(`Server proxy: ${detail}`);
+    }
+
+    syncVesselMarkers();
+    updateMarineTable();
+    updateMarinePreview();
+    updateMarineStats();
+  } catch(e) {
+    setAISDebug(`Proxy poll error: ${e.message}`);
+  }
+}
+
+function syncVesselMarkers() {
+  if (!maps.marine) return;
+  // Add/update markers for all known vessels
+  Object.keys(vesselMap).forEach(mmsi => updateVesselMarker(mmsi));
+  // Remove markers for purged vessels
+  Object.keys(vesselMarkers).forEach(mmsi => {
+    if (!vesselMap[mmsi]) { vesselMarkers[mmsi].remove(); delete vesselMarkers[mmsi]; }
+  });
+}
+
+let _aisConnectTimer = null;
+
+function connectAIS() {
+  const key = getAISKey();
+  if (!key) {
+    const banner = $('ais-key-banner');
+    if (banner) banner.style.display = 'block';
+    setAISStatus('off');
+    const body = $('all-marine-body');
+    if (body) body.innerHTML = `<div class="empty" style="padding:16px">
+      Get a free API key at <a href="https://aisstream.io" target="_blank" style="color:var(--c-marine)">aisstream.io</a>
+      then enter it in the Marine tab to enable live vessel tracking.
+    </div>`;
+    const tbody = $('marine-vessel-tbody');
+    if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="empty">Enter your aisstream.io API key above to begin</td></tr>`;
+    return;
+  }
+
+  // Close existing socket if any
+  if (aisSocket) { try { aisSocket.close(); } catch(e) {} aisSocket = null; }
+  if (_aisConnectTimer) { clearTimeout(_aisConnectTimer); _aisConnectTimer = null; }
+
+  setAISStatus('connecting');
+  const keySnip = key.substring(0, 6) + '…';
+  setAISDebug(`Connecting… (key: ${keySnip})`);
+  console.log('[AIS] Connecting to', AIS_WS_URL, '— key prefix:', keySnip);
+
+  // Timeout: if onopen hasn't fired in 12s the socket is probably blocked
+  _aisConnectTimer = setTimeout(() => {
+    if (aisSocket && aisSocket.readyState === WebSocket.CONNECTING) {
+      setAISDebug('Timeout — WSS port may be blocked (firewall/VPN/antivirus). Retrying in 30s…');
+      setAISStatus('off');
+      console.warn('[AIS] Connection timeout after 12s — readyState:', aisSocket.readyState);
+      try { aisSocket.close(); } catch(e) {}
+      if (getAISKey()) setTimeout(connectAIS, 30000);
+    }
+  }, 12000);
+
+  aisSocket = new WebSocket(AIS_WS_URL);
+
+  aisSocket.onopen = () => {
+    clearTimeout(_aisConnectTimer); _aisConnectTimer = null;
+    // Send subscription — no FilterMessageTypes (not a valid aisstream.io field)
+    const sub = { APIKey: key, BoundingBoxes: [AIS_BOUNDS] };
+    aisSocket.send(JSON.stringify(sub));
+    setAISStatus('live');
+    setAISDebug(`Connected · Subscribed to Hudson River bounds`);
+    console.log('[AIS] Subscription sent:', JSON.stringify(sub));
+  };
+
+  aisSocket.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      // aisstream.io sends an error object if the key is invalid
+      if (msg.error || msg.Error) {
+        const err = msg.error || msg.Error;
+        setAISDebug(`Server error: ${err}`);
+        setAISStatus('off');
+        console.error('[AIS] Server error:', err);
+        return;
+      }
+      setAISDebug(`Live · Last msg: ${msg.MessageType || 'unknown'} · ${Object.keys(vesselMap).length} vessels`);
+      processAISMessage(msg);
+    } catch(e) {
+      console.warn('[AIS] Parse error:', e, event.data?.substring(0, 100));
+    }
+  };
+
+  aisSocket.onerror = (e) => {
+    clearTimeout(_aisConnectTimer); _aisConnectTimer = null;
+    setAISStatus('off');
+    setAISDebug('WebSocket error — check F12 console for details');
+    console.error('[AIS] WebSocket error event:', e);
+  };
+
+  aisSocket.onclose = (e) => {
+    clearTimeout(_aisConnectTimer); _aisConnectTimer = null;
+    setAISStatus('off');
+    // Close code 1006 = abnormal closure (connection never established or dropped by network)
+    // Close code 1000 = normal closure
+    // Close code 4xxx = application-level (e.g. 4001 = bad API key on some servers)
+    const reason = e.reason ? ` "${e.reason}"` : '';
+    setAISDebug(`Closed code ${e.code}${reason} — reconnecting in 30s…`);
+    console.warn('[AIS] Connection closed — code:', e.code, 'reason:', e.reason || '(none)', 'wasClean:', e.wasClean);
+    if (getAISKey()) setTimeout(connectAIS, 30000);
+  };
+}
+
+function setAISDebug(msg) {
+  const el = $('ais-debug');
+  if (el) el.textContent = msg;
+  // Also update the status text
+  const st = $('ais-status-text');
+  if (st && !msg.startsWith('Live')) return; // only override if live
+}
+
+function processAISMessage(msg) {
+  const meta = msg.MetaData || {};
+  const mmsi = meta.MMSI || meta.UserID;
+  if (!mmsi) return;
+
+  const type = msg.MessageType;
+
+  if (type === 'PositionReport' || type === 'StandardClassBPositionReport') {
+    const pr = msg.Message?.PositionReport || msg.Message?.StandardClassBPositionReport || {};
+    const lat = meta.latitude  || pr.Latitude;
+    const lon = meta.longitude || pr.Longitude;
+    if (!lat || !lon || lat === 0 || lon === 0) return;
+
+    vesselMap[mmsi] = {
+      ...vesselMap[mmsi],
+      mmsi,
+      name:    meta.ShipName?.trim() || vesselMap[mmsi]?.name || `MMSI ${mmsi}`,
+      lat, lon,
+      sog:     pr.Sog,         // speed over ground (knots)
+      cog:     pr.Cog,         // course over ground
+      heading: pr.TrueHeading,
+      navStatus: pr.NavigationalStatus,
+      lastSeen: Date.now(),
+    };
+    updateVesselMarker(mmsi);
+  }
+
+  if (type === 'ShipStaticData') {
+    const sd = msg.Message?.ShipStaticData || {};
+    vesselMap[mmsi] = {
+      ...vesselMap[mmsi],
+      mmsi,
+      name:        (sd.Name || meta.ShipName || '').trim() || `MMSI ${mmsi}`,
+      typeCode:    sd.Type,
+      destination: (sd.Destination || '').trim(),
+      callsign:    sd.CallSign,
+      lastSeen:    Date.now(),
+    };
+  }
+
+  updateMarineTable();
+  updateMarinePreview();
+  updateMarineStats();
+}
+
+function updateVesselMarker(mmsi) {
+  const v = vesselMap[mmsi];
+  if (!v || !v.lat || !v.lon || !maps.marine) return;
+  const vt = getVesselType(v.typeCode);
+  const hdg = v.heading && v.heading < 360 ? v.heading : (v.cog || 0);
+
+  const icon = L.divIcon({
+    html: `<div style="font-size:16px;transform:rotate(${hdg}deg);filter:drop-shadow(0 0 3px ${vesselIconColor(v.typeCode)})">${vt.icon}</div>`,
+    className: '', iconSize: [22, 22], iconAnchor: [11, 11]
+  });
+
+  const popup = `<b>${v.name}</b><br>
+    MMSI: ${v.mmsi}<br>
+    Type: ${vt.label}<br>
+    Speed: ${v.sog != null ? v.sog.toFixed(1) + ' kn' : '—'}<br>
+    Heading: ${hdg ? Math.round(hdg) + '° ' + degToCard(hdg) : '—'}<br>
+    Status: ${NAV_STATUS[v.navStatus] || '—'}<br>
+    Destination: ${v.destination || '—'}`;
+
+  if (vesselMarkers[mmsi]) {
+    vesselMarkers[mmsi].setLatLng([v.lat, v.lon]).setIcon(icon).setPopupContent(popup);
+  } else {
+    vesselMarkers[mmsi] = L.marker([v.lat, v.lon], { icon })
+      .bindPopup(popup)
+      .addTo(maps.marine);
+  }
+}
+
+function vesselIconColor(typeCode) {
+  const vt = getVesselType(typeCode);
+  const colors = { cargo:'#f59e0b', tanker:'#ef4444', passenger:'#06b6d4', sailing:'#34d399', pleasure:'#a78bfa', tug:'#fb923c', other:'#64748b' };
+  return colors[vt.cls] || '#64748b';
+}
+
+function updateMarineTable() {
+  const tbody = $('marine-vessel-tbody');
+  if (!tbody) return;
+  const vessels = Object.values(vesselMap).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+  if (!vessels.length) { tbody.innerHTML = `<tr><td colspan="8" class="empty">No AIS vessels in Hudson River bounds right now — the river may be quiet, or start.bat needs to be running for server proxy mode</td></tr>`; return; }
+
+  const lu = $('marine-last-update');
+  if (lu) lu.textContent = `Updated ${fmtTime(new Date())} · ${vessels.length} vessel${vessels.length !== 1 ? 's' : ''}`;
+
+  tbody.innerHTML = vessels.slice(0, 60).map(v => {
+    const vt = getVesselType(v.typeCode);
+    const hdg = v.heading && v.heading < 360 ? v.heading : v.cog;
+    return `<tr>
+      <td class="vessel-name"><span class="vessel-dot ${vt.cls}"></span>${v.name || '—'}</td>
+      <td class="vessel-mmsi">${v.mmsi}</td>
+      <td>${vt.icon} ${vt.label}</td>
+      <td>${v.sog != null ? v.sog.toFixed(1) + ' kn' : '—'}</td>
+      <td>${hdg ? Math.round(hdg) + '° ' + degToCard(hdg) : '—'}</td>
+      <td style="font-size:10px;color:var(--text3)">${NAV_STATUS[v.navStatus] || '—'}</td>
+      <td style="font-size:10px;color:var(--text2)">${v.destination || '—'}</td>
+      <td style="font-size:10px;color:var(--text3)">${timeAgo(v.lastSeen)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function updateMarinePreview() {
+  const body = $('all-marine-body');
+  if (!body) return;
+  const vessels = Object.values(vesselMap).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+  if (!vessels.length) { body.innerHTML = `<div class="empty">No vessels detected yet</div>`; return; }
+  body.innerHTML = `
+    <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+      <div class="aircraft-count" style="color:var(--c-marine)">${vessels.length}</div>
+      <div class="aircraft-label">vessels on Hudson</div>
+    </div>
+    <ul class="aircraft-list">
+      ${vessels.slice(0, 5).map(v => {
+        const vt = getVesselType(v.typeCode);
+        return `<li>
+          <span class="callsign" style="color:var(--c-marine)">${v.name || '—'}</span>
+          <span><div class="ac-lbl">Type</div><div class="ac-val">${vt.label}</div></span>
+          <span><div class="ac-lbl">Speed</div><div class="ac-val">${v.sog != null ? v.sog.toFixed(1) + 'kn' : '—'}</div></span>
+          <span><div class="ac-lbl">Dest</div><div class="ac-val" style="font-size:9px">${v.destination || '—'}</div></span>
+        </li>`;
+      }).join('')}
+    </ul>`;
+}
+
+function updateMarineStats() {
+  const vessels = Object.values(vesselMap);
+  $('marine-vessel-count') && ($('marine-vessel-count').textContent = vessels.length);
+  const counts = { cargo: 0, passenger: 0, pleasure: 0, other: 0 };
+  vessels.forEach(v => {
+    const vt = getVesselType(v.typeCode);
+    if (vt.cls === 'cargo' || vt.cls === 'tanker') counts.cargo++;
+    else if (vt.cls === 'passenger') counts.passenger++;
+    else if (vt.cls === 'pleasure' || vt.cls === 'sailing') counts.pleasure++;
+    else counts.other++;
+  });
+  $('marine-cargo-count')     && ($('marine-cargo-count').textContent     = counts.cargo);
+  $('marine-passenger-count') && ($('marine-passenger-count').textContent = counts.passenger);
+  $('marine-pleasure-count')  && ($('marine-pleasure-count').textContent  = counts.pleasure);
+  $('marine-other-count')     && ($('marine-other-count').textContent     = counts.other);
+}
+
+// Purge vessels not seen in 10 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  Object.keys(vesselMap).forEach(mmsi => {
+    if ((vesselMap[mmsi].lastSeen || 0) < cutoff) {
+      if (vesselMarkers[mmsi]) { vesselMarkers[mmsi].remove(); delete vesselMarkers[mmsi]; }
+      delete vesselMap[mmsi];
+    }
+  });
+}, 60000);
+
 // ─── INIT & REFRESH LOOPS ───────────────────────────────────────
 async function init() {
   initTabs();
   initMaps();
+
+  // Connect AIS — tries server proxy first, falls back to direct WebSocket
+  initAIS();
 
   // Parallel load
   Promise.all([
@@ -776,16 +1388,18 @@ async function init() {
     fetchNews(),
     fetchCrimes(),
     fetchServices(),
-    fetchCalendars(),
+    fetchTrafficIncidents(),
+    // fetchCalendars() is now called inside fetchEvents() to keep them in sync
   ]);
 
   // Refresh timers
-  setInterval(fetchWeather,  CFG.refresh.weather);
+  setInterval(fetchWeather,           CFG.refresh.weather);
   setInterval(() => { fetchAlerts(); fetchUSGS(); }, CFG.refresh.alerts);
-  setInterval(fetchAircraft, CFG.refresh.aircraft);
-  setInterval(fetchReddit,   CFG.refresh.community);
-  setInterval(fetchServices, CFG.refresh.services);
-  setInterval(fetchNews,     CFG.refresh.community);
+  setInterval(fetchAircraft,          CFG.refresh.aircraft);
+  setInterval(fetchReddit,            CFG.refresh.community);
+  setInterval(fetchServices,          CFG.refresh.services);
+  setInterval(fetchNews,              CFG.refresh.community);
+  setInterval(fetchTrafficIncidents,  5 * 60 * 1000);   // every 5 min
 }
 
 document.addEventListener('DOMContentLoaded', init);

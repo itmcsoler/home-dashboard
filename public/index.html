@@ -33,6 +33,7 @@
   <button class="tab-btn" data-tab="crimes"><i class="fas fa-shield-alt"></i> Crimes</button>
   <button class="tab-btn" data-tab="transportation"><i class="fas fa-car"></i> Transportation</button>
   <button class="tab-btn" data-tab="aviation"><i class="fas fa-plane"></i> Aviation</button>
+  <button class="tab-btn" data-tab="marine"><i class="fas fa-anchor"></i> Marine</button>
   <button class="tab-btn" data-tab="community"><i class="fas fa-users"></i> Community</button>
   <button class="tab-btn" data-tab="services"><i class="fas fa-bolt"></i> Services</button>
 </nav>
@@ -56,10 +57,13 @@
     <div class="panel traffic-panel" id="all-traffic">
       <div class="panel-header">
         <div class="panel-title" style="color:var(--c-transport)"><i class="fas fa-car"></i> Traffic — Elmsford Area</div>
-        <div class="panel-meta">Live tiles</div>
+        <div class="panel-meta">Waze Live Traffic</div>
       </div>
       <div class="mini-map-container">
-        <div id="mini-map"></div>
+        <iframe id="mini-map-waze"
+          src="https://embed.waze.com/iframe?zoom=12&lat=41.0534&lon=-73.8196&pin=1&ct=livemap"
+          style="width:100%;height:100%;border:0;display:block"
+          allowfullscreen></iframe>
         <button class="map-overlay-btn" onclick="switchTab('transportation')">Full Map →</button>
       </div>
     </div>
@@ -98,7 +102,19 @@
       </div>
     </div>
 
-    <!-- Community -->
+    <!-- Marine / AIS -->
+    <div class="panel marine-preview" id="all-marine">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-marine)"><i class="fas fa-anchor"></i> Hudson River Vessels</div>
+        <div class="panel-meta" id="all-marine-meta">Connecting…</div>
+      </div>
+      <div class="panel-body" id="all-marine-body">
+        <div class="loading"><div class="spinner"></div> Connecting to AIS stream…</div>
+      </div>
+      <div class="see-all" onclick="switchTab('marine')">Full marine view →</div>
+    </div>
+
+    <!-- Community (row 3) -->
     <div class="panel community-preview" id="all-community">
       <div class="panel-header">
         <div class="panel-title" style="color:var(--c-community)"><i class="fas fa-users"></i> Community</div>
@@ -126,7 +142,7 @@
     <div class="panel news-panel" id="all-news">
       <div class="panel-header">
         <div class="panel-title" style="color:var(--c-weather)"><i class="fas fa-newspaper"></i> Local News</div>
-        <div class="panel-meta">lohud · Patch · Rivertowns</div>
+        <div class="panel-meta">lohud · Patch · Rivertowns &nbsp;<button onclick="fetchNews()" title="Refresh news" style="background:transparent;border:1px solid var(--border2);color:var(--text3);font-size:10px;padding:1px 7px;border-radius:4px;cursor:pointer">↺</button></div>
       </div>
       <div id="all-news-body" class="news-grid">
         <div class="loading"><div class="spinner"></div> Loading news…</div>
@@ -256,9 +272,14 @@
     <div class="panel transport-map-card">
       <div class="panel-header">
         <div class="panel-title" style="color:var(--c-transport)"><i class="fas fa-map"></i> Traffic Map — Westchester</div>
-        <div class="panel-meta">CartoDB + OSM</div>
+        <div class="panel-meta">Waze Live Traffic</div>
       </div>
-      <div class="transport-map-container"><div id="transport-map"></div></div>
+      <div class="transport-map-container">
+        <iframe id="transport-map-waze"
+          src="https://embed.waze.com/iframe?zoom=11&lat=41.0534&lon=-73.8196&pin=1&ct=livemap"
+          style="width:100%;height:100%;border:0;display:block"
+          allowfullscreen></iframe>
+      </div>
     </div>
 
     <div style="display:flex;flex-direction:column;gap:var(--gap)">
@@ -284,9 +305,13 @@
       <div class="panel">
         <div class="panel-header">
           <div class="panel-title" style="color:var(--c-transport)"><i class="fas fa-road"></i> Traffic Incidents</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:10px;color:var(--text3)">Waze</span>
+            <button onclick="fetchTrafficIncidents()" title="Refresh incidents" style="background:transparent;border:1px solid var(--border2);color:var(--text3);font-size:10px;padding:1px 7px;border-radius:4px;cursor:pointer">↺</button>
+          </div>
         </div>
         <div class="panel-body" id="traffic-incidents-body">
-          <div class="empty">Check <a href="https://511ny.org" target="_blank" style="color:var(--c-transport)">511ny.org</a> for live incidents</div>
+          <div class="loading"><div class="spinner"></div> Loading incidents…</div>
         </div>
       </div>
 
@@ -311,7 +336,7 @@
     <div class="panel aviation-map-card">
       <div class="panel-header">
         <div class="panel-title" style="color:var(--c-aviation)"><i class="fas fa-plane"></i> ADS-B / MLAT — Live Aircraft — 25mi Radius</div>
-        <div class="panel-meta">Source: OpenSky Network · <span id="aviation-count">—</span> aircraft</div>
+        <div class="panel-meta">OpenSky Network · <span id="aviation-count">—</span> &nbsp;<button onclick="fetchAircraft()" title="Refresh aircraft data" style="background:transparent;border:1px solid var(--border2);color:var(--text3);font-size:10px;padding:1px 7px;border-radius:4px;cursor:pointer">↺</button></div>
       </div>
       <div class="aviation-map-container"><div id="aviation-map"></div></div>
     </div>
@@ -347,7 +372,10 @@
     <div class="panel">
       <div class="panel-header">
         <div class="panel-title" style="color:var(--c-community)"><i class="fab fa-reddit"></i> r/Westchester</div>
-        <a href="https://www.reddit.com/r/Westchester" target="_blank" style="font-size:10px;color:var(--text3)">Open Reddit ↗</a>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button onclick="fetchReddit()" title="Refresh Reddit" style="background:transparent;border:1px solid var(--border2);color:var(--text3);font-size:10px;padding:1px 7px;border-radius:4px;cursor:pointer">↺</button>
+          <a href="https://www.reddit.com/r/Westchester" target="_blank" style="font-size:10px;color:var(--text3)">Open ↗</a>
+        </div>
       </div>
       <ul class="community-list" id="reddit-list">
         <li class="loading"><div class="spinner"></div> Loading…</li>
@@ -357,6 +385,7 @@
     <div class="panel">
       <div class="panel-header">
         <div class="panel-title" style="color:var(--c-community)"><i class="fas fa-newspaper"></i> Local News</div>
+        <button onclick="fetchNews()" title="Refresh news" style="background:transparent;border:1px solid var(--border2);color:var(--text3);font-size:10px;padding:1px 7px;border-radius:4px;cursor:pointer">↺</button>
       </div>
       <ul class="community-list" id="news-list-community">
         <li class="loading"><div class="spinner"></div> Loading…</li>
@@ -412,6 +441,83 @@
     <div class="loading"><div class="spinner"></div> Checking all services…</div>
   </div>
 </div><!-- /tab-services -->
+
+<!-- ══════════════════ MARINE TAB ══════════════════ -->
+<div class="tab-content" id="tab-marine">
+
+  <!-- API key banner -->
+  <div class="panel ais-key-banner" id="ais-key-banner" style="display:none">
+    <div class="panel-body" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <span style="font-size:16px">🔑</span>
+      <div style="flex:1">
+        <div style="font-size:12px;font-weight:700;color:var(--c-marine)">AIS API Key Required</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">Get a free key at <a href="https://aisstream.io" target="_blank" style="color:var(--c-marine)">aisstream.io</a>, then paste it below</div>
+      </div>
+      <input id="ais-key-input" type="text" placeholder="Paste your aisstream.io API key…"
+        style="flex:2;min-width:260px;background:var(--card);border:1px solid var(--border2);color:var(--text);padding:7px 12px;border-radius:6px;font-size:12px;outline:none"/>
+      <button onclick="saveAISKey()" style="background:var(--c-marine);color:#000;font-weight:700;font-size:12px;padding:7px 16px;border:none;border-radius:6px;cursor:pointer">Connect</button>
+    </div>
+  </div>
+
+  <!-- Stats bar -->
+  <div class="panel" style="margin-bottom:var(--gap)">
+    <div class="stats-bar">
+      <div class="stat-chip"><div class="stat-val" id="marine-vessel-count" style="color:var(--c-marine)">—</div><div class="stat-lbl">Vessels Tracked</div></div>
+      <div class="stat-chip"><div class="stat-val" id="marine-cargo-count">—</div><div class="stat-lbl">Cargo / Tanker</div></div>
+      <div class="stat-chip"><div class="stat-val" id="marine-passenger-count">—</div><div class="stat-lbl">Passenger</div></div>
+      <div class="stat-chip"><div class="stat-val" id="marine-pleasure-count">—</div><div class="stat-lbl">Recreation</div></div>
+      <div class="stat-chip"><div class="stat-val" id="marine-other-count">—</div><div class="stat-lbl">Other</div></div>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span id="ais-debug" style="font-size:10px;color:var(--text3);font-family:monospace;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+        <button onclick="connectAIS()" title="Retry AIS connection" style="background:transparent;border:1px solid var(--border2);color:var(--text3);font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer">↺ Retry</button>
+        <div class="svc-dot" id="ais-status-dot" style="width:10px;height:10px;border-radius:50%;background:var(--unk)"></div>
+        <span id="ais-status-text" style="font-size:11px;color:var(--text3)">Not connected</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="marine-grid">
+
+    <!-- Map -->
+    <div class="panel marine-map-card">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-marine)"><i class="fas fa-map"></i> Hudson River — Live AIS</div>
+        <div class="panel-meta">
+          <a href="https://www.marinetraffic.com/en/ais/home/centerx:-73.96/centery:41.05/zoom:11" target="_blank" style="color:var(--c-marine)">MarineTraffic ↗</a>
+        </div>
+      </div>
+      <div class="marine-map-container"><div id="marine-map"></div></div>
+    </div>
+
+    <!-- Vessel table -->
+    <div class="panel" style="grid-column:1/-1">
+      <div class="panel-header">
+        <div class="panel-title" style="color:var(--c-marine)"><i class="fas fa-ship"></i> Active Vessels</div>
+        <div class="panel-meta" id="marine-last-update">—</div>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="aircraft-table" id="marine-vessel-table">
+          <thead>
+            <tr>
+              <th>Vessel Name</th>
+              <th>MMSI</th>
+              <th>Type</th>
+              <th>Speed</th>
+              <th>Heading</th>
+              <th>Status</th>
+              <th>Destination</th>
+              <th>Last Seen</th>
+            </tr>
+          </thead>
+          <tbody id="marine-vessel-tbody">
+            <tr><td colspan="8" class="loading"><div class="spinner"></div> Waiting for AIS data…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div><!-- /tab-marine -->
 
 </main><!-- /main-content -->
 

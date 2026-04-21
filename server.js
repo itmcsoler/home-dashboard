@@ -4,14 +4,24 @@
  * Run with: node server.js
  */
 
-const http  = require('http');
-const https = require('https');
-const url   = require('url');
-const path  = require('path');
-const fs    = require('fs');
+const http   = require('http');
+const https  = require('https');
+const url    = require('url');
+const path   = require('path');
+const fs     = require('fs');
+const crypto = require('crypto');
 
 const PORT    = 3000;
 const PUBLIC  = path.join(__dirname, 'public');
+const CONFIG_FILE = path.join(__dirname, 'config.json');
+
+// ─── CONFIG (persists AIS key across restarts) ────────────────────
+function loadConfig() {
+  try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch(e) { return {}; }
+}
+function saveConfig(data) {
+  try { fs.writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2)); } catch(e) { console.warn('Config save failed:', e.message); }
+}
 
 // ─── MIME TYPES ──────────────────────────────────────────────────
 const MIME = {
@@ -30,8 +40,10 @@ function fetch(urlStr, opts = {}) {
       path: parsed.pathname + parsed.search,
       method: opts.method || 'GET',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; HomeDashboard/1.0)',
-        'Accept': 'application/json, text/html, application/xml, */*',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
         ...(opts.headers || {})
       },
       timeout: opts.timeout || 10000
@@ -240,17 +252,262 @@ async function handleAllServices(req, res) {
 }
 
 async function handleCrimes(req, res) {
+  // radius=3 = 3-mile radius around Elmsford (SpotCrime uses miles)
+  const url = 'https://spotcrime.com/crimes.json?lat=41.0534&lon=-73.8196&radius=3&callback=spotcrime';
   try {
-    const r = await fetch(`https://spotcrime.com/crimes.json?lat=41.0534&lon=-73.8196&radius=0.02&callback=spotcrime`, {
-      headers: { 'Referer': 'https://spotcrime.com/' }
+    const r = await fetch(url, {
+      headers: { 'Referer': 'https://spotcrime.com/', 'Accept': 'application/javascript, */*' }
     });
     let text = r.text().trim();
-    if (text.startsWith('spotcrime(')) text = text.slice(10);
-    if (text.endsWith(');')) text = text.slice(0, -2);
-    else if (text.endsWith(')')) text = text.slice(0, -1);
+    // Handle JSONP wrapper flexibly — match any function call wrapping JSON
+    const jsonpMatch = text.match(/^[a-zA-Z_$][\w$]*\s*\(([\s\S]+)\)\s*;?\s*$/);
+    if (jsonpMatch) {
+      text = jsonpMatch[1].trim();
+    }
     json(res, JSON.parse(text));
   } catch(e) {
     json(res, { crimes: [], error: e.message });
+  }
+}
+
+// ─── MINIMAL WEBSOCKET CLIENT (pure Node.js, no npm) ─────────────
+// Routes the AIS connection server-side so browser SSL inspection can't block it.
+function wsClient(opts) {
+  const wsKey = crypto.randomBytes(16).toString('base64');
+  let buf = Buffer.alloc(0);
+
+  function buildFrame(opcode, payload) {
+    const mask = crypto.randomBytes(4);
+    const len  = payload.length;
+    let hdr;
+    if      (len <= 125)    { hdr = Buffer.alloc(6);  hdr[0]=0x80|opcode; hdr[1]=0x80|len;  mask.copy(hdr,2); }
+    else if (len <= 65535)  { hdr = Buffer.alloc(8);  hdr[0]=0x80|opcode; hdr[1]=0x80|126; hdr.writeUInt16BE(len,2); mask.copy(hdr,4); }
+    else                    { hdr = Buffer.alloc(14); hdr[0]=0x80|opcode; hdr[1]=0x80|127; hdr.writeBigUInt64BE(BigInt(len),2); mask.copy(hdr,10); }
+    const body = Buffer.allocUnsafe(len);
+    for (let i = 0; i < len; i++) body[i] = payload[i] ^ mask[i % 4];
+    return Buffer.concat([hdr, body]);
+  }
+
+  function parseFrames(socket) {
+    while (buf.length >= 2) {
+      const opcode  = buf[0] & 0x0f;
+      const hasMask = (buf[1] & 0x80) !== 0;
+      let plen = buf[1] & 0x7f, off = 2;
+      if      (plen === 126) { if (buf.length < 4)  return; plen = buf.readUInt16BE(2);          off = 4; }
+      else if (plen === 127) { if (buf.length < 10) return; plen = Number(buf.readBigUInt64BE(2)); off = 10; }
+      if (hasMask) off += 4;
+      if (buf.length < off + plen) return;
+      let payload = buf.slice(off, off + plen);
+      if (hasMask) {
+        const mk = buf.slice(off - 4, off);
+        payload = Buffer.from(payload);
+        for (let i = 0; i < plen; i++) payload[i] ^= mk[i % 4];
+      }
+      buf = buf.slice(off + plen);
+      if      (opcode === 1 || opcode === 2) { opts.onMessage && opts.onMessage(payload.toString()); }
+      else if (opcode === 8) { socket.destroy(); opts.onClose && opts.onClose(plen >= 2 ? payload.readUInt16BE(0) : 1000, plen > 2 ? payload.slice(2).toString() : ''); return; }
+      else if (opcode === 9) { socket.write(buildFrame(10, Buffer.alloc(0))); } // pong
+    }
+  }
+
+  const req = https.request({
+    hostname: opts.hostname, port: opts.port || 443, path: opts.path, method: 'GET',
+    headers: {
+      'Host': opts.hostname, 'Upgrade': 'websocket', 'Connection': 'Upgrade',
+      'Sec-WebSocket-Key': wsKey, 'Sec-WebSocket-Version': '13',
+      'User-Agent': 'HomeDashboard/1.0'
+    }
+  });
+  req.on('upgrade', (res, socket, head) => {
+    buf = head || Buffer.alloc(0);
+    const send = text => socket.write(buildFrame(1, Buffer.from(text, 'utf8')));
+    socket.on('data', d => { buf = Buffer.concat([buf, d]); parseFrames(socket); });
+    socket.on('close', () => opts.onClose && opts.onClose(1006, 'socket closed'));
+    socket.on('error', e => opts.onError && opts.onError(e));
+    opts.onOpen && opts.onOpen(send);
+  });
+  req.on('response', r => opts.onError && opts.onError(new Error(`HTTP ${r.statusCode} — WebSocket upgrade rejected`)));
+  req.on('error', e => opts.onError && opts.onError(e));
+  req.setTimeout(15000, () => { req.destroy(); opts.onError && opts.onError(new Error('Connection timeout')); });
+  req.end();
+}
+
+// ─── AIS SERVER PROXY ────────────────────────────────────────────
+// Maintains a single persistent AIS WebSocket on the server side.
+// Browser polls GET /api/ais to get the latest vessel snapshot.
+let aisKey       = '';
+let aisVessels   = {};   // MMSI → vessel
+let aisConnected = false;
+let aisRetryTimer = null;
+let aisStatus    = 'off'; // 'off' | 'connecting' | 'live'
+
+function startAISProxy(key) {
+  if (!key) return;
+  if (aisRetryTimer) { clearTimeout(aisRetryTimer); aisRetryTimer = null; }
+  aisKey = key;
+  aisStatus = 'connecting';
+  console.log('[AIS proxy] Connecting to aisstream.io…');
+
+  wsClient({
+    hostname: 'stream.aisstream.io',
+    path: '/v0/stream',
+    onOpen(send) {
+      aisConnected = true;
+      aisStatus = 'live';
+      const sub = { APIKey: key, BoundingBoxes: [[[40.55, -74.10], [41.55, -73.85]]] };
+      send(JSON.stringify(sub));
+      console.log('[AIS proxy] Connected & subscribed · Hudson River bounds');
+    },
+    onMessage(text) {
+      try {
+        const msg = JSON.parse(text);
+        if (msg.error || msg.Error) {
+          console.error('[AIS proxy] Server error:', msg.error || msg.Error);
+          aisStatus = 'error:' + (msg.error || msg.Error);
+          return;
+        }
+        processAISProxy(msg);
+      } catch(e) { /* ignore parse errors */ }
+    },
+    onClose(code, reason) {
+      aisConnected = false;
+      aisStatus = `closed:${code}`;
+      console.log(`[AIS proxy] Closed (${code}${reason ? ' · ' + reason : ''}) — retrying in 30s`);
+      if (aisKey) aisRetryTimer = setTimeout(() => startAISProxy(aisKey), 30000);
+    },
+    onError(e) {
+      aisConnected = false;
+      aisStatus = `error:${e.message}`;
+      console.error('[AIS proxy] Error:', e.message, '— retrying in 30s');
+      if (aisKey) aisRetryTimer = setTimeout(() => startAISProxy(aisKey), 30000);
+    }
+  });
+}
+
+function processAISProxy(msg) {
+  const meta = msg.MetaData || {};
+  const mmsi = String(meta.MMSI || meta.UserID || '');
+  if (!mmsi) return;
+
+  if (msg.MessageType === 'PositionReport' || msg.MessageType === 'StandardClassBPositionReport') {
+    const pr  = msg.Message?.PositionReport || msg.Message?.StandardClassBPositionReport || {};
+    const lat = meta.latitude  || pr.Latitude;
+    const lon = meta.longitude || pr.Longitude;
+    if (!lat || !lon || lat === 0 || lon === 0) return;
+    aisVessels[mmsi] = {
+      ...aisVessels[mmsi], mmsi, lat, lon,
+      name:      (meta.ShipName || '').trim() || aisVessels[mmsi]?.name || `MMSI ${mmsi}`,
+      sog:       pr.Sog, cog: pr.Cog, heading: pr.TrueHeading,
+      navStatus: pr.NavigationalStatus,
+      lastSeen:  Date.now()
+    };
+  } else if (msg.MessageType === 'ShipStaticData') {
+    const sd = msg.Message?.ShipStaticData || {};
+    aisVessels[mmsi] = {
+      ...aisVessels[mmsi], mmsi,
+      name:        (sd.Name || meta.ShipName || '').trim() || aisVessels[mmsi]?.name || `MMSI ${mmsi}`,
+      typeCode:    sd.Type,
+      destination: (sd.Destination || '').trim(),
+      lastSeen:    aisVessels[mmsi]?.lastSeen || Date.now()
+    };
+  }
+}
+
+// Purge vessels not seen in 15 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 15 * 60 * 1000;
+  Object.keys(aisVessels).forEach(m => { if ((aisVessels[m].lastSeen || 0) < cutoff) delete aisVessels[m]; });
+}, 60000);
+
+// ─── REDDIT PROXY ────────────────────────────────────────────────
+async function handleReddit(req, res) {
+  const sub = (req.query.sub || 'Westchester').replace(/[^a-zA-Z0-9_]/g, '');
+  try {
+    const r = await fetch(`https://www.reddit.com/r/${sub}.json?limit=20`, {
+      headers: { 'User-Agent': 'HomeDashboard/1.0 (local)' }
+    });
+    if (!r.ok) return json(res, { posts: [], error: `HTTP ${r.status}` });
+    const d = r.json();
+    const posts = (d.data?.children || []).map(c => c.data).map(p => ({
+      title:    p.title,
+      url:      p.url,
+      permalink: p.permalink,
+      score:    p.score,
+      comments: p.num_comments,
+      created:  p.created_utc,
+      author:   p.author,
+      flair:    p.link_flair_text || ''
+    }));
+    json(res, { posts });
+  } catch(e) {
+    json(res, { posts: [], error: e.message });
+  }
+}
+
+// ─── AIRCRAFT PROXY ──────────────────────────────────────────────
+async function handleAircraft(req, res) {
+  const b = '40.55,-74.40,41.55,-72.90'; // lamin,lomin,lamax,lomax
+  const [lamin, lomin, lamax, lomax] = b.split(',');
+  try {
+    const r = await fetch(
+      `https://opensky-network.org/api/states/all?lamin=${lamin}&lomin=${lomin}&lamax=${lamax}&lomax=${lomax}`
+    );
+    if (r.status === 429 || r.status === 503) return json(res, { states: [], error: `rate_limited` }, 429);
+    if (r.status === 401 || r.status === 403) return json(res, { states: [], error: `access_denied_${r.status}` });
+    if (!r.ok) return json(res, { states: [], error: `http_${r.status}` });
+    json(res, r.json());
+  } catch(e) {
+    json(res, { states: [], error: e.message });
+  }
+}
+
+async function handleAIS(req, res) {
+  json(res, {
+    vessels:   Object.values(aisVessels),
+    connected: aisConnected,
+    status:    aisStatus,
+    count:     Object.keys(aisVessels).length
+  });
+}
+
+async function handleAISKey(req, res) {
+  if (req.method === 'GET') {
+    return json(res, { connected: aisConnected, status: aisStatus, count: Object.keys(aisVessels).length });
+  }
+  if (req.method !== 'POST') return json(res, { error: 'POST required' }, 405);
+  let body = '';
+  req.on('data', c => body += c);
+  req.on('end', () => {
+    try {
+      const { key } = JSON.parse(body);
+      if (!key) return json(res, { error: 'key required' }, 400);
+      saveConfig({ ...loadConfig(), aisKey: key });
+      startAISProxy(key);
+      json(res, { ok: true, message: 'AIS proxy connecting…' });
+    } catch(e) { json(res, { error: e.message }, 400); }
+  });
+}
+
+// ─── WAZE TRAFFIC PROXY ──────────────────────────────────────────
+async function handleTraffic(req, res) {
+  // Waze public live-map API — alerts & jams in a ~15-mile box around Elmsford
+  const wazeUrl = 'https://www.waze.com/live-map/api/georss' +
+    '?top=41.15&bottom=40.90&left=-74.10&right=-73.55&env=row&types=alerts,jams';
+  try {
+    const r = await fetch(wazeUrl, {
+      headers: {
+        'Referer': 'https://www.waze.com/live-map',
+        'Accept': 'application/json, text/javascript, */*',
+        'Origin': 'https://www.waze.com'
+      },
+      timeout: 8000
+    });
+    const text = r.text();
+    // Waze returns JSON; occasionally wraps in a callback — strip if needed
+    const clean = text.trim().replace(/^[a-zA-Z_$][\w$]*\s*\(/, '').replace(/\)\s*;?\s*$/, '');
+    json(res, JSON.parse(clean));
+  } catch(e) {
+    json(res, { alerts: [], jams: [], error: e.message });
   }
 }
 
@@ -262,6 +519,12 @@ const ROUTES = {
   '/api/service/coned':          handleConed,
   '/api/services/all':           handleAllServices,
   '/api/crimes':                 handleCrimes,
+  '/api/traffic':                handleTraffic,
+  '/api/ping':                   (req, res) => json(res, { ok: true }),
+  '/api/reddit':                 handleReddit,
+  '/api/aircraft':               handleAircraft,
+  '/api/ais':                    handleAIS,
+  '/api/ais/key':                handleAISKey,
 };
 
 // ─── SERVER ──────────────────────────────────────────────────────
@@ -272,7 +535,11 @@ const server = http.createServer(async (req, res) => {
 
   // CORS preflight
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET' });
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST',
+      'Access-Control-Allow-Headers': 'Content-Type'
+    });
     return res.end();
   }
 
@@ -288,6 +555,15 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`\n🏠  10523 HQ Dashboard`);
   console.log(`    http://localhost:${PORT}`);
-  console.log(`\n    Weather, aircraft, alerts, services all loading...`);
+  console.log(`\n    Weather, aircraft, alerts, services loading...`);
+
+  // Auto-start AIS proxy if we have a saved key
+  const cfg = loadConfig();
+  if (cfg.aisKey) {
+    console.log(`    AIS key found in config — connecting proxy automatically`);
+    startAISProxy(cfg.aisKey);
+  } else {
+    console.log(`    AIS proxy ready — paste key in Marine tab to activate`);
+  }
   console.log(`    Press Ctrl+C to stop.\n`);
 });
