@@ -200,8 +200,8 @@ html, body {
 /* ─── MAP PANELS ────────────────────────────────────────────── */
 .mini-map-container { height: 200px; position: relative; }
 #mini-map, #transport-map, #aviation-map, #crime-map { width: 100%; height: 100%; }
-/* Waze embeds: invert + hue-rotate for dark-mode look */
-#mini-map-waze, #transport-map-waze {
+/* Waze + SpotCrime embeds: invert + hue-rotate for dark-mode look */
+#mini-map-waze, #transport-map-waze, #spotcrime-embed {
   filter: invert(90%) hue-rotate(180deg) brightness(0.85) contrast(1.05);
 }
 .map-overlay-btn {

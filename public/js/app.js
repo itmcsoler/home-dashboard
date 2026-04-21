@@ -127,12 +127,7 @@ function initMaps() {
   // Mini traffic map (All tab) → Waze iframe (no Leaflet init needed)
   // Transport map → Waze iframe (no Leaflet init needed)
 
-  // Crime map
-  maps.crime = L.map('crime-map', { zoomControl:true })
-    .setView([CFG.lat, CFG.lon], 13);
-  L.tileLayer(CFG.cartoTiles, tileOpts).addTo(maps.crime);
-  L.circleMarker([CFG.lat, CFG.lon], { color:'#38bdf8', fillColor:'#38bdf8', fillOpacity:1, radius:6 })
-    .addTo(maps.crime).bindPopup('🏠 Home');
+  // Crime map → SpotCrime.io iframe (no Leaflet init needed)
 
   // Aviation map
   maps.aviation = L.map('aviation-map', { zoomControl:true })
@@ -742,20 +737,6 @@ function renderCrimes(crimes) {
   $('crime-property') && ($('crime-property').textContent = property);
   $('crime-other')    && ($('crime-other').textContent    = other);
 
-  // Clear old markers
-  crimeMarkers.forEach(m => m.remove());
-  crimeMarkers = [];
-
-  // Map + list
-  crimes.forEach(c => {
-    if (!c.lat || !c.lon) return;
-    const color = crimeColor(c.type);
-    const m = L.circleMarker([c.lat, c.lon], { color, fillColor: color, fillOpacity: 0.8, radius: 6, weight: 1 })
-      .bindPopup(`<b>${c.type}</b><br>${c.address}<br>${fmtDate(c.date)}`)
-      .addTo(maps.crime);
-    crimeMarkers.push(m);
-  });
-
   const listBody = $('crimes-list-body');
   if (listBody) {
     listBody.innerHTML = crimes.slice(0, 20).map(c => `
@@ -857,6 +838,22 @@ const MTA_STATUS_COLORS = {
   'SUSPENDED':      { cls: 'bad',  label: 'Suspended',      color: 'var(--bad)' },
 };
 
+async function saveTransitKey() {
+  const input = $('transit-key-input');
+  const key   = input ? input.value.trim() : '';
+  if (!key) return;
+  try {
+    await fetch('/api/transit/key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key })
+    });
+    const banner = $('transit-key-banner');
+    if (banner) banner.style.display = 'none';
+    fetchTransit();
+  } catch(e) { alert('Failed to save key: ' + e.message); }
+}
+
 async function fetchTransit() {
   const body = $('transit-status-body');
   if (!body) return;
@@ -871,32 +868,47 @@ async function fetchTransit() {
     const r    = await fetch('/api/transit');
     const data = await r.json();
 
-    const lines = data.metro_north || [];
-    if (lines.length === 0) throw new Error(data.error || 'No data');
+    // Show key banner if no 511NY key configured yet
+    if (data.needsKey) {
+      const banner = $('transit-key-banner');
+      if (banner) banner.style.display = 'block';
+      body.innerHTML = `<div class="transit-item">
+        <div class="transit-name" style="color:var(--text3)">Enter 511NY key above for live status</div>
+        <div class="transit-sub"><a href="https://new.mta.info/alerts" target="_blank" style="color:var(--c-transport)">Check MTA directly ↗</a></div>
+      </div>`;
+      return;
+    }
 
-    // Lines we care about for Elmsford (Harlem + Hudson)
-    const PRIORITY = ['Harlem', 'Hudson', 'New Haven', 'Port Jervis', 'Pascack Valley'];
+    if (data.error) console.error('[Transit] error:', data.error);
+
+    const lines = data.metro_north || [];
+    if (lines.length === 0) throw new Error(data.error || 'No line data returned');
+
+    // Lines relevant to Elmsford — Hudson Line (Tarrytown) is the primary station
+    const PRIORITY = ['Hudson', 'Harlem', 'New Haven', 'Port Jervis', 'Pascack Valley'];
     const sorted = [
       ...PRIORITY.map(n => lines.find(l => l.name === n)).filter(Boolean),
       ...lines.filter(l => !PRIORITY.includes(l.name))
     ];
 
-    const ROUTE_ENDS = {
-      'Harlem':         'Grand Central ↔ Southeast',
-      'Hudson':         'Grand Central ↔ Poughkeepsie',
-      'New Haven':      'Grand Central ↔ New Haven',
-      'Port Jervis':    'Hoboken ↔ Port Jervis',
-      'Pascack Valley': 'Hoboken ↔ Spring Valley',
+    // Display names and route descriptions (Hudson = Tarrytown station)
+    const LINE_DISPLAY = {
+      'Hudson':         { label: 'Hudson Line', sub: 'Grand Central ↔ Tarrytown ↔ Poughkeepsie · Nearest: Tarrytown' },
+      'Harlem':         { label: 'Harlem Line', sub: 'Grand Central ↔ Southeast' },
+      'New Haven':      { label: 'New Haven Line', sub: 'Grand Central ↔ New Haven' },
+      'Port Jervis':    { label: 'Port Jervis Line', sub: 'Hoboken ↔ Port Jervis' },
+      'Pascack Valley': { label: 'Pascack Valley Line', sub: 'Hoboken ↔ Spring Valley' },
     };
 
     body.innerHTML = sorted.map(line => {
-      const info  = MTA_STATUS_COLORS[line.status] || { cls: 'warn', label: line.status || '—', color: 'var(--text3)' };
-      const route = ROUTE_ENDS[line.name] || '';
-      const note  = line.text && line.status !== 'GOOD SERVICE' ? line.text.substring(0, 120) : '';
-      return `<div class="transit-item">
-        <div class="transit-name">${line.name} Line &nbsp;<span class="transit-badge ${info.cls}">${info.label}</span></div>
-        ${route ? `<div class="transit-sub">${route}</div>` : ''}
-        ${note  ? `<div class="transit-sub" style="color:var(--warn);margin-top:3px;font-size:10px">${note}</div>` : ''}
+      const info    = MTA_STATUS_COLORS[line.status] || { cls: 'warn', label: line.status || '—', color: 'var(--text3)' };
+      const display = LINE_DISPLAY[line.name] || { label: line.name + ' Line', sub: '' };
+      const note    = line.text && line.status !== 'GOOD SERVICE' ? line.text.substring(0, 140) : '';
+      const isPrimary = line.name === 'Hudson';
+      return `<div class="transit-item" ${isPrimary ? 'style="border-left:2px solid var(--c-transport);padding-left:8px"' : ''}>
+        <div class="transit-name">${display.label} &nbsp;<span class="transit-badge ${info.cls}">${info.label}</span></div>
+        ${display.sub ? `<div class="transit-sub">${display.sub}</div>` : ''}
+        ${note ? `<div class="transit-sub" style="color:var(--warn);margin-top:3px;font-size:10px">${note}</div>` : ''}
       </div>`;
     }).join('') +
     `<div style="margin-top:8px"><a href="https://new.mta.info/alerts" target="_blank" style="font-size:11px;color:var(--c-transport)">MTA Alerts ↗</a></div>`;

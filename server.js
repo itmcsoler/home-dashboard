@@ -291,38 +291,80 @@ async function handleCrimes(req, res) {
   }
 }
 
-// ─── MTA METRO-NORTH STATUS ──────────────────────────────────────
-async function handleTransit(req, res) {
-  // MTA public service status XML feed — no API key required
-  const feedUrl = 'http://web.mta.info/status/serviceStatus.txt';
-  try {
-    const r = await fetch(feedUrl, { timeout: 8000 });
-    const xml = r.text();
+// ─── 511NY TRANSIT KEY ────────────────────────────────────────────
+async function handleTransitKey(req, res) {
+  if (req.method === 'GET') {
+    const cfg = loadConfig();
+    return json(res, { hasKey: !!cfg.transitKey });
+  }
+  // POST — save key
+  let body = '';
+  req.on('data', c => body += c);
+  req.on('end', () => {
+    try {
+      const { key } = JSON.parse(body);
+      if (!key) return json(res, { error: 'key required' }, 400);
+      saveConfig({ ...loadConfig(), transitKey: key.trim() });
+      json(res, { ok: true });
+    } catch(e) { json(res, { error: e.message }, 400); }
+  });
+}
 
-    function parseSection(sectionName) {
-      const sec = xml.match(new RegExp(`<${sectionName}>([\\s\\S]*?)<\\/${sectionName}>`));
-      if (!sec) return [];
-      const lines = [];
-      const lineRe = /<line>([\s\S]*?)<\/line>/g;
-      let m;
-      while ((m = lineRe.exec(sec[1])) !== null) {
-        const get = tag => {
-          const t = m[1].match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
-          return t ? t[1].replace(/<[^>]+>/g,'').trim() : '';
-        };
-        const name = get('name');
-        if (name) lines.push({ name, status: get('status'), text: get('text'), date: get('Date'), time: get('Time') });
+// ─── MTA METRO-NORTH STATUS (511NY API) ──────────────────────────
+async function handleTransit(req, res) {
+  const cfg = loadConfig();
+  const key = cfg.transitKey;
+
+  if (!key) {
+    return json(res, { metro_north: [], needsKey: true });
+  }
+
+  // 511NY service alerts API — Metro-North Railroad
+  // Docs: https://511ny.org/developers/
+  const url = `https://511ny.org/api/getservicealerts?key=${key}&format=json&agency=MNR`;
+  try {
+    const r = await fetch(url, {
+      headers: { 'Accept': 'application/json' },
+      timeout: 10000
+    });
+    if (!r.ok) return json(res, { metro_north: [], error: `511NY HTTP ${r.status}` });
+
+    const data = r.json();
+    const entities = data.Entities || data.entities || [];
+
+    // MNR line names used in GTFS RouteIds
+    const ALL_LINES = ['Hudson', 'Harlem', 'New Haven', 'Port Jervis', 'Pascack Valley', 'Waterbury', 'Danbury', 'New Canaan'];
+
+    // Build a status map: line → {status, text}
+    const lineMap = {};
+    ALL_LINES.forEach(l => { lineMap[l] = { name: l, status: 'GOOD SERVICE', text: '' }; });
+
+    for (const entity of entities) {
+      const alert = entity.Alert || entity.alert;
+      if (!alert) continue;
+
+      const effect  = (alert.Effect  || alert.effect  || '').toUpperCase();
+      const header  = (alert.HeaderText?.Translation?.[0]?.Text || alert.header_text?.translation?.[0]?.text || '');
+      const desc    = (alert.DescriptionText?.Translation?.[0]?.Text || alert.description_text?.translation?.[0]?.text || '');
+
+      const informed = alert.InformedEntity || alert.informed_entity || [];
+      for (const ie of informed) {
+        const routeId = ie.RouteId || ie.route_id || '';
+        if (lineMap[routeId]) {
+          // Map GTFS effect to display status
+          const statusMap = {
+            'REDUCED_SERVICE': 'DELAYS', 'SIGNIFICANT_DELAYS': 'DELAYS', 'DETOUR': 'SERVICE CHANGE',
+            'MODIFIED_SERVICE': 'SERVICE CHANGE', 'NO_SERVICE': 'SUSPENDED', 'OTHER_EFFECT': 'SERVICE CHANGE',
+          };
+          lineMap[routeId].status = statusMap[effect] || 'PLANNED WORK';
+          lineMap[routeId].text   = header || desc;
+        }
       }
-      return lines;
     }
 
-    json(res, {
-      metro_north: parseSection('metro_north'),
-      lirr:        parseSection('lirr'),
-      subway:      parseSection('subway'),
-    });
+    return json(res, { metro_north: Object.values(lineMap) });
   } catch(e) {
-    json(res, { metro_north: [], error: e.message });
+    return json(res, { metro_north: [], error: e.message });
   }
 }
 
@@ -577,6 +619,7 @@ const ROUTES = {
   '/api/crimes':                 handleCrimes,
   '/api/traffic':                handleTraffic,
   '/api/transit':                handleTransit,
+  '/api/transit/key':            handleTransitKey,
   '/api/ping':                   (req, res) => json(res, { ok: true }),
   '/api/reddit':                 handleReddit,
   '/api/aircraft':               handleAircraft,
