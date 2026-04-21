@@ -286,19 +286,10 @@
       <div class="panel">
         <div class="panel-header">
           <div class="panel-title" style="color:var(--c-transport)"><i class="fas fa-train"></i> Metro-North</div>
+          <button onclick="fetchTransit()" title="Refresh transit status" style="background:transparent;border:1px solid var(--border2);color:var(--text3);font-size:10px;padding:1px 7px;border-radius:4px;cursor:pointer">↺</button>
         </div>
         <div class="transit-status" id="transit-status-body">
-          <div class="transit-item">
-            <div class="transit-name">Harlem Line <span class="transit-badge ok">Checking…</span></div>
-            <div class="transit-sub">Grand Central ↔ Southeast</div>
-          </div>
-          <div class="transit-item">
-            <div class="transit-name">Hudson Line <span class="transit-badge ok">Checking…</span></div>
-            <div class="transit-sub">Grand Central ↔ Poughkeepsie</div>
-          </div>
-          <div style="margin-top:8px">
-            <a href="https://new.mta.info/alerts" target="_blank" style="font-size:11px;color:var(--c-transport)">MTA Alerts ↗</a>
-          </div>
+          <div class="loading"><div class="spinner"></div> Checking…</div>
         </div>
       </div>
 

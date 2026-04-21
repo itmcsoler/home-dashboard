@@ -715,10 +715,16 @@ async function fetchCrimes() {
   try {
     const r = await fetch('/api/crimes');
     const d = await r.json();
+    if (d.error && (!d.crimes || d.crimes.length === 0)) {
+      const lb = $('crimes-list-body');
+      if (lb) lb.innerHTML = `<div class="empty">SpotCrime unavailable (${d.error})<br>
+        <a href="https://spotcrime.com/ny/westchester/elmsford" target="_blank" style="color:var(--c-crimes)">View SpotCrime directly ↗</a></div>`;
+      return;
+    }
     renderCrimes(d.crimes || []);
   } catch(e) {
     const lb = $('crimes-list-body');
-    if (lb) lb.innerHTML = `<div class="empty">Crime data unavailable<br><a href="https://spotcrime.com" target="_blank" style="color:var(--c-crimes)">SpotCrime ↗</a></div>`;
+    if (lb) lb.innerHTML = `<div class="empty">Crime data unavailable<br><a href="https://spotcrime.com/ny/westchester/elmsford" target="_blank" style="color:var(--c-crimes)">SpotCrime ↗</a></div>`;
   }
 }
 
@@ -839,6 +845,67 @@ async function fetchTrafficIncidents() {
 
   } catch(e) {
     body.innerHTML = `<div class="empty">Waze data unavailable — <a href="https://www.waze.com/live-map/" target="_blank" style="color:var(--c-transport)">waze.com ↗</a></div>`;
+  }
+}
+
+// ─── MTA METRO-NORTH STATUS ─────────────────────────────────────
+const MTA_STATUS_COLORS = {
+  'GOOD SERVICE':   { cls: 'ok',   label: 'Good Service',   color: 'var(--ok)' },
+  'DELAYS':         { cls: 'bad',  label: 'Delays',         color: 'var(--bad)' },
+  'PLANNED WORK':   { cls: 'warn', label: 'Planned Work',   color: 'var(--warn)' },
+  'SERVICE CHANGE': { cls: 'warn', label: 'Service Change', color: 'var(--warn)' },
+  'SUSPENDED':      { cls: 'bad',  label: 'Suspended',      color: 'var(--bad)' },
+};
+
+async function fetchTransit() {
+  const body = $('transit-status-body');
+  if (!body) return;
+
+  const hasServer = await checkServer();
+  if (!hasServer) {
+    body.innerHTML = `<div class="empty">Server offline — <a href="https://new.mta.info/alerts" target="_blank" style="color:var(--c-transport)">MTA Alerts ↗</a></div>`;
+    return;
+  }
+
+  try {
+    const r    = await fetch('/api/transit');
+    const data = await r.json();
+
+    const lines = data.metro_north || [];
+    if (lines.length === 0) throw new Error(data.error || 'No data');
+
+    // Lines we care about for Elmsford (Harlem + Hudson)
+    const PRIORITY = ['Harlem', 'Hudson', 'New Haven', 'Port Jervis', 'Pascack Valley'];
+    const sorted = [
+      ...PRIORITY.map(n => lines.find(l => l.name === n)).filter(Boolean),
+      ...lines.filter(l => !PRIORITY.includes(l.name))
+    ];
+
+    const ROUTE_ENDS = {
+      'Harlem':         'Grand Central ↔ Southeast',
+      'Hudson':         'Grand Central ↔ Poughkeepsie',
+      'New Haven':      'Grand Central ↔ New Haven',
+      'Port Jervis':    'Hoboken ↔ Port Jervis',
+      'Pascack Valley': 'Hoboken ↔ Spring Valley',
+    };
+
+    body.innerHTML = sorted.map(line => {
+      const info  = MTA_STATUS_COLORS[line.status] || { cls: 'warn', label: line.status || '—', color: 'var(--text3)' };
+      const route = ROUTE_ENDS[line.name] || '';
+      const note  = line.text && line.status !== 'GOOD SERVICE' ? line.text.substring(0, 120) : '';
+      return `<div class="transit-item">
+        <div class="transit-name">${line.name} Line &nbsp;<span class="transit-badge ${info.cls}">${info.label}</span></div>
+        ${route ? `<div class="transit-sub">${route}</div>` : ''}
+        ${note  ? `<div class="transit-sub" style="color:var(--warn);margin-top:3px;font-size:10px">${note}</div>` : ''}
+      </div>`;
+    }).join('') +
+    `<div style="margin-top:8px"><a href="https://new.mta.info/alerts" target="_blank" style="font-size:11px;color:var(--c-transport)">MTA Alerts ↗</a></div>`;
+
+  } catch(e) {
+    body.innerHTML = `<div class="transit-item">
+      <div class="transit-name">Status unavailable</div>
+      <div class="transit-sub"><a href="https://new.mta.info/alerts" target="_blank" style="color:var(--c-transport)">Check MTA directly ↗</a></div>
+    </div>`;
   }
 }
 
@@ -1389,6 +1456,7 @@ async function init() {
     fetchCrimes(),
     fetchServices(),
     fetchTrafficIncidents(),
+    fetchTransit(),
     // fetchCalendars() is now called inside fetchEvents() to keep them in sync
   ]);
 
@@ -1400,6 +1468,7 @@ async function init() {
   setInterval(fetchServices,          CFG.refresh.services);
   setInterval(fetchNews,              CFG.refresh.community);
   setInterval(fetchTrafficIncidents,  5 * 60 * 1000);   // every 5 min
+  setInterval(fetchTransit,          10 * 60 * 1000);   // every 10 min
 }
 
 document.addEventListener('DOMContentLoaded', init);

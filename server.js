@@ -252,21 +252,77 @@ async function handleAllServices(req, res) {
 }
 
 async function handleCrimes(req, res) {
-  // radius=3 = 3-mile radius around Elmsford (SpotCrime uses miles)
-  const url = 'https://spotcrime.com/crimes.json?lat=41.0534&lon=-73.8196&radius=3&callback=spotcrime';
+  // radius=0.5 means ~0.5 degrees (~35mi) — SpotCrime "radius" is in degrees, not miles
+  // Try plain JSON first (no JSONP wrapper), fall back to JSONP
+  const base = 'https://spotcrime.com/crimes.json?lat=41.0534&lon=-73.8196&radius=0.05';
+  const hdrs = {
+    'Referer': 'https://spotcrime.com/ny/westchester/elmsford',
+    'Accept': 'application/json, application/javascript, text/javascript, */*; q=0.01',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'X-Requested-With': 'XMLHttpRequest',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin'
+  };
+
+  // Try plain JSON first
   try {
-    const r = await fetch(url, {
-      headers: { 'Referer': 'https://spotcrime.com/', 'Accept': 'application/javascript, */*' }
-    });
-    let text = r.text().trim();
-    // Handle JSONP wrapper flexibly — match any function call wrapping JSON
-    const jsonpMatch = text.match(/^[a-zA-Z_$][\w$]*\s*\(([\s\S]+)\)\s*;?\s*$/);
-    if (jsonpMatch) {
-      text = jsonpMatch[1].trim();
+    const r = await fetch(base, { headers: hdrs, timeout: 10000 });
+    if (r.ok) {
+      const text = r.text().trim();
+      if (text.startsWith('{') || text.startsWith('[')) {
+        return json(res, JSON.parse(text));
+      }
+      // Might be JSONP even without callback param — strip wrapper
+      const m = text.match(/^[a-zA-Z_$][\w$]*\s*\(([\s\S]+)\)\s*;?\s*$/);
+      if (m) return json(res, JSON.parse(m[1].trim()));
     }
-    json(res, JSON.parse(text));
+  } catch(e) { /* fall through to JSONP attempt */ }
+
+  // JSONP fallback
+  try {
+    const r2 = await fetch(base + '&callback=sc', { headers: hdrs, timeout: 10000 });
+    let text = r2.text().trim();
+    const m = text.match(/^[a-zA-Z_$][\w$]*\s*\(([\s\S]+)\)\s*;?\s*$/);
+    if (m) text = m[1].trim();
+    return json(res, JSON.parse(text));
   } catch(e) {
-    json(res, { crimes: [], error: e.message });
+    return json(res, { crimes: [], error: e.message });
+  }
+}
+
+// ─── MTA METRO-NORTH STATUS ──────────────────────────────────────
+async function handleTransit(req, res) {
+  // MTA public service status XML feed — no API key required
+  const feedUrl = 'http://web.mta.info/status/serviceStatus.txt';
+  try {
+    const r = await fetch(feedUrl, { timeout: 8000 });
+    const xml = r.text();
+
+    function parseSection(sectionName) {
+      const sec = xml.match(new RegExp(`<${sectionName}>([\\s\\S]*?)<\\/${sectionName}>`));
+      if (!sec) return [];
+      const lines = [];
+      const lineRe = /<line>([\s\S]*?)<\/line>/g;
+      let m;
+      while ((m = lineRe.exec(sec[1])) !== null) {
+        const get = tag => {
+          const t = m[1].match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
+          return t ? t[1].replace(/<[^>]+>/g,'').trim() : '';
+        };
+        const name = get('name');
+        if (name) lines.push({ name, status: get('status'), text: get('text'), date: get('Date'), time: get('Time') });
+      }
+      return lines;
+    }
+
+    json(res, {
+      metro_north: parseSection('metro_north'),
+      lirr:        parseSection('lirr'),
+      subway:      parseSection('subway'),
+    });
+  } catch(e) {
+    json(res, { metro_north: [], error: e.message });
   }
 }
 
@@ -520,6 +576,7 @@ const ROUTES = {
   '/api/services/all':           handleAllServices,
   '/api/crimes':                 handleCrimes,
   '/api/traffic':                handleTraffic,
+  '/api/transit':                handleTransit,
   '/api/ping':                   (req, res) => json(res, { ok: true }),
   '/api/reddit':                 handleReddit,
   '/api/aircraft':               handleAircraft,
